@@ -1,5 +1,9 @@
 # clean-end-of-session
 
+> **Compatibility:** last tested and approved with **Claude Code 2.1.291**.
+
+Tired of hitting the usage limit of your Pro or Max subscription right in the middle of a task? Or worse: lying awake at night, afraid Claude is quietly burning through all of your extra usage? Relax. Embrace **clean-end-of-session**.
+
 A Claude Code mod that winds your agents down **cleanly** before your subscription credit runs out, instead of letting the limit cut them off in the middle of a task.
 
 When the session credit gets close to its limit, the mod stops new work. Every running subagent gets a few more tool calls to reach a consistent state, then must hand back a status report. The orchestrator turns these reports into a **resume memo** at the root of your repository, which you use to pick the work up once your credit is back.
@@ -23,7 +27,7 @@ The session ends once that memo is written, or after two orchestrator turns that
 
 ## Requirements
 
-- **Claude Code with function-hook plugins (mods).** This API is in early access and may change between releases. The mod was built and tested on Claude Code **2.1.289 – 2.1.291**.
+- **Claude Code with function-hook plugins (mods).** This API is in early access and may change between releases. The mod was built and tested on Claude Code **2.1.289 – 2.1.291**; the latest version tested and approved is **2.1.291**.
 - **A Claude Pro or Max subscription.** Claude Code reports credit percentages only on a subscription. With an API key, the thresholds never fire, and only `/clean-end-of-session stop` works.
 - **Optional: extra usage** turned on in your claude.ai usage settings, with a monthly cap. Without it there is no overage: at 100% Claude Code is cut off as usual, so the clean stop must fit within the margin before 100%.
 
@@ -62,7 +66,11 @@ The command runs at once, even while a turn is running.
 
 ## Settings
 
-In `/config`, open the **▸ clean-end-of-session** row to show its settings:
+In `/config`, the mod's settings are folded under a single **▸ clean-end-of-session** row, so they don't clutter the menu.
+
+> **To open it, set that row to `true`.** The `/config` menu has no real collapsible groups, so the chevron is a toggle in disguise: `true` unfolds the settings below it (the row turns into **▾ clean-end-of-session**), `false` folds them away again. If the settings don't show up right away, close and reopen `/config`.
+
+Once unfolded, every setting starts with `clean-end-of-session ·`:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
