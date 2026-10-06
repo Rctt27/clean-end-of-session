@@ -1,0 +1,9 @@
+# Written by Claude Code each time it loads a mod: the API's declarations.
+**/.claude-plugin/types/
+
+# Resume memos a clean stop leaves behind.
+CLEAN-END-OF-SESSION_*.md
+
+node_modules/
+.idea/
+.DS_Store

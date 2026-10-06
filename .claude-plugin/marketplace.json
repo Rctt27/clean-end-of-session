@@ -1,0 +1,26 @@
+{
+  "name": "clean-end-of-session",
+  "owner": {
+    "name": "Renaud Couttet",
+    "url": "https://github.com/Rctt27"
+  },
+  "metadata": {
+    "description": "Marketplace of the clean-end-of-session Claude Code mod."
+  },
+  "plugins": [
+    {
+      "name": "clean-end-of-session",
+      "source": "./",
+      "description": "Winds agents down cleanly as the session's credit runs out and has the orchestrator write a resume memo.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "keywords": [
+        "usage-limits",
+        "subagents",
+        "rate-limit",
+        "resume",
+        "hooks"
+      ]
+    }
+  ]
+}

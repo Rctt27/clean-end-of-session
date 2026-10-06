@@ -1,0 +1,52 @@
+{
+  "name": "clean-end-of-session",
+  "version": "0.1.0",
+  "description": "Winds agents down cleanly as the session's credit runs out and has the orchestrator write a resume memo.",
+  "author": {
+    "name": "Renaud Couttet",
+    "url": "https://github.com/Rctt27"
+  },
+  "homepage": "https://github.com/Rctt27/clean-end-of-session",
+  "repository": "https://github.com/Rctt27/clean-end-of-session",
+  "license": "MIT",
+  "keywords": [
+    "usage-limits",
+    "subagents",
+    "rate-limit",
+    "resume",
+    "hooks"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "showSettings": {
+      "type": "boolean",
+      "title": "clean-end-of-session",
+      "description": "Shows or hides the clean-end-of-session settings below.",
+      "default": false
+    },
+    "sessionThreshold": {
+      "type": "number",
+      "title": "clean-end-of-session · Session trigger threshold (%)",
+      "description": "Share of the 5-hour session window used that starts the clean stop.",
+      "default": 90
+    },
+    "weeklyThreshold": {
+      "type": "number",
+      "title": "clean-end-of-session · Weekly trigger threshold (%)",
+      "description": "Share of the 7-day window used that starts the clean stop; its last few percent are about one whole session.",
+      "default": 95
+    },
+    "overageBudgetUsd": {
+      "type": "number",
+      "title": "clean-end-of-session · Overage budget ($)",
+      "description": "Estimated spend allowed past 100 % to finish the clean stop; once spent, no request leaves anymore.",
+      "default": 2
+    },
+    "graceToolCalls": {
+      "type": "number",
+      "title": "clean-end-of-session · Grace tool calls",
+      "description": "Tool calls each subagent keeps after its warning, before its tools are cut off.",
+      "default": 5
+    }
+  }
+}
