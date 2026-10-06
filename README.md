@@ -19,6 +19,8 @@ When the session credit gets close to its limit, the mod stops new work. Every r
 
 The weekly threshold is higher than the session one on purpose: the last 10% of a week is about a whole 5-hour session.
 
+Everything the mod says in the conversation is drawn in **yellow** under a `⏹ clean-end-of-session` label: its notes to the orchestrator, the brake's answers (which look like a reply but come from no model), and its command output. You always tell the mod's actions apart from the agent's own work. This changes the drawing only, never what the model reads; press ctrl+o for the raw transcript.
+
 ### The resume memo
 
 As soon as the stop starts, the mod writes a provisional `CLEAN-END-OF-SESSION_<date>.md` at the root of the git repository the session works in (else in the session's root folder). It copies in each subagent's status report as it arrives, so the file is useful even if the orchestrator never gets to write its own memo. The orchestrator then replaces the file with the full memo: the overall goal, each agent's state, the decisions made, and how to resume. The mod never overwrites a memo the orchestrator wrote.

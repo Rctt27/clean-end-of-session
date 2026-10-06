@@ -121,6 +121,22 @@ const AGENT_CUTOFF =
   `${TAG} Tools cut off: the session credit is almost used up. Call no more tools. Write your ` +
   `final answer now as a status report (done / half done with files / next step / watch-outs).`
 
+// Everything the mod says in the conversation is drawn in this colour, under
+// this label, so it never reads as the agent's own work.
+const MOD_COLOR = 'yellow'
+const MOD_LABEL = `⏹ ${NAME}`
+
+const isModText = (text: string) => text.trimStart().startsWith(TAG)
+
+// The message without its tag, or a command's output without the plugin name
+// the engine prints before it.
+const modBody = (text: string) => {
+  const body = text.trimStart()
+  const prefix = [TAG, `${NAME}:`].find(p => body.startsWith(p)) ?? ''
+
+  return body.slice(prefix.length).trim()
+}
+
 const SPAWN_DENIED = `${TAG} Spawn refused: a clean stop is under way, the session credit is almost used up.`
 
 const mainNote = (cfg: Config, trigger: string, agents: number, memoPath: string) =>
@@ -485,6 +501,49 @@ export const register: Register = (on, options) => {
     return { text: await statusText($, cfg) }
   })
 
+  // The mod's notes to the orchestrator and its agents: user-role rows.
+  on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
+    if (!isModText(e.props.text)) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor={MOD_COLOR} paddingX={1}>
+        <Text color={MOD_COLOR} bold>{MOD_LABEL}</Text>
+        <Text color={MOD_COLOR} wrap="wrap">{modBody(e.props.text)}</Text>
+      </Box>
+    )
+  })
+
+  // The brake's answers: they read as a reply, yet no model wrote them.
+  on('ui.render', { component: 'AssistantMessage' }, ($, e, next) => {
+    if (!isModText(e.props.text)) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+
+    return (
+      <Box flexDirection="column">
+        <Text color={MOD_COLOR} bold>{MOD_LABEL}</Text>
+        <Text color={MOD_COLOR} wrap="wrap">{modBody(e.props.text)}</Text>
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'CommandOutput', props: { command: NAME } }, ($, e, next) => {
+    if (e.props.isErrored) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+
+    return (
+      <Box flexDirection="column">
+        {modBody(e.props.text)
+          .split('\n')
+          .map((line, i) => (
+            <Text key={`line-${i}`} color={MOD_COLOR} wrap="wrap">
+              {line}
+            </Text>
+          ))}
+      </Box>
+    )
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const s = await read($, status)
     if (e.props.hasSurvey || s.phase === 'armed' || s.phase === 'off') return next(e)
@@ -501,11 +560,11 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
-        <Text color={isHalted(s) ? 'red' : 'yellow'} wrap="truncate">
+        <Text color={MOD_COLOR} bold={isHalted(s)} wrap="truncate">
           {`${NAME} · ${label}`}
         </Text>
         {s.memoPath !== null && (
-          <Text dimColor wrap="truncate">
+          <Text color={MOD_COLOR} dimColor wrap="truncate">
             {`Memo: ${s.memoPath}`}
           </Text>
         )}

@@ -16,7 +16,7 @@ The repository is both the plugin and its own marketplace: `.claude-plugin/plugi
 ```sh
 claude plugin validate .
 claude plugin test .
-tsc -p .            # needs .claude-plugin/types, laid once the mod has loaded
+tsc -p .            # needs .claude-plugin/types, laid only when the mod is loaded with --plugin-dir
 ```
 
 For a live run, load the mod with `claude --plugin-dir .` (saves hot-reload), launch two or three background subagents on a long read-only task, then `/clean-end-of-session stop`.
@@ -39,6 +39,7 @@ Phases (`CleanEndStatus.phase`): `armed` → `stopping` → `overage` (a window 
 - **Warnings** are delivered with `$.session.append` (a hidden user row), falling back to `$.session.send`. Keep it that way: changing the system prompt through `prompt.compose` would invalidate the prompt cache of the whole conversation, exactly when credit is scarce.
 - **Overage budget:** the spend past 100% is estimated as the growth of `$.session.usage().cost.usd` since the window reached 100%. It is an estimate at API prices, not the invoice.
 - **Module variables reset on every reload** (each save, each `/config` change). State that must survive goes in `$.state` (the `status` atom).
+- **Yellow rows:** `ui.render` hooks on `UserMessage`, `AssistantMessage` and `CommandOutput` redraw any row whose text starts with `[clean-end-of-session]` (or the mod's command output) in `MOD_COLOR` under `MOD_LABEL`. Every message the mod sends must keep that tag, or it will read as the agent's own. Drawing only: the stored row and what the model reads are unchanged.
 - **`/config` chevron:** the `showSettings` boolean is relabelled `▸`/`▾ clean-end-of-session` by a `config.describe` hook, which hides the other rows while it is `false`. The menu has no real groups.
 
 ## Test kit quirks
