@@ -25,11 +25,20 @@ As soon as the stop starts, the mod writes a provisional `CLEAN-END-OF-SESSION_<
 
 The session ends once that memo is written, or after two orchestrator turns that did not write it.
 
-## Requirements
+## Settings
 
-- **Claude Code with function-hook plugins (mods).** This API is in early access and may change between releases. The mod was built and tested on Claude Code **2.1.289 – 2.1.291**; the latest version tested and approved is **2.1.291**.
-- **A Claude Pro or Max subscription.** Claude Code reports credit percentages only on a subscription. With an API key, the thresholds never fire, and only `/clean-end-of-session stop` works.
-- **Optional: extra usage** turned on in your claude.ai usage settings, with a monthly cap. Without it there is no overage: at 100% Claude Code is cut off as usual, so the clean stop must fit within the margin before 100%.
+In `/config`, the mod's settings are folded under a single **▸ clean-end-of-session** row, so they don't clutter the menu.
+
+> **To open it, set that row to `true`.** The `/config` menu has no real collapsible groups, so the chevron is a toggle in disguise: `true` unfolds the settings below it (the row turns into **▾ clean-end-of-session**), `false` folds them away again. If the settings don't show up right away, close and reopen `/config`.
+
+Once unfolded, every setting starts with `clean-end-of-session ·`:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| Session trigger threshold (%) | 90 | Use of the 5-hour window that starts the clean stop |
+| Weekly trigger threshold (%) | 95 | Use of the 7-day window that starts the clean stop |
+| Overage budget ($) | 2 | Estimated spend allowed past 100% to finish the stop |
+| Grace tool calls | 5 | Tool calls each subagent keeps after its warning |
 
 ## Install
 
@@ -53,6 +62,12 @@ claude --plugin-dir /path/to/clean-end-of-session
 { "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/path/to/clean-end-of-session" } }
 ```
 
+## Requirements
+
+- **Claude Code with function-hook plugins (mods).** This API is in early access and may change between releases. The mod was built and tested on Claude Code **2.1.289 – 2.1.291**; the latest version tested and approved is **2.1.291**.
+- **A Claude Pro or Max subscription.** Claude Code reports credit percentages only on a subscription. With an API key, the thresholds never fire, and only `/clean-end-of-session stop` works.
+- **Optional: extra usage** turned on in your claude.ai usage settings, with a monthly cap. Without it there is no overage: at 100% Claude Code is cut off as usual, so the clean stop must fit within the margin before 100%.
+
 ## Commands
 
 | Command | Effect |
@@ -63,21 +78,6 @@ claude --plugin-dir /path/to/clean-end-of-session
 | `/clean-end-of-session off` | Ignores the thresholds for this session |
 
 The command runs at once, even while a turn is running.
-
-## Settings
-
-In `/config`, the mod's settings are folded under a single **▸ clean-end-of-session** row, so they don't clutter the menu.
-
-> **To open it, set that row to `true`.** The `/config` menu has no real collapsible groups, so the chevron is a toggle in disguise: `true` unfolds the settings below it (the row turns into **▾ clean-end-of-session**), `false` folds them away again. If the settings don't show up right away, close and reopen `/config`.
-
-Once unfolded, every setting starts with `clean-end-of-session ·`:
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| Session trigger threshold (%) | 90 | Use of the 5-hour window that starts the clean stop |
-| Weekly trigger threshold (%) | 95 | Use of the 7-day window that starts the clean stop |
-| Overage budget ($) | 2 | Estimated spend allowed past 100% to finish the stop |
-| Grace tool calls | 5 | Tool calls each subagent keeps after its warning |
 
 ## Limits worth knowing
 
