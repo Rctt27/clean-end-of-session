@@ -115,7 +115,9 @@ const agentWarning = (cfg: Config, trigger: string) =>
   `new step. You have at most ${cfg.graceCalls} more tool calls to leave files in a consistent ` +
   `state (finish or revert the change in progress), then your tools will be cut off. Your final ` +
   `answer must be a status report: 1) what is done; 2) what is half done, with the files involved; ` +
-  `3) the exact next step to resume; 4) anything to watch out for.`
+  `3) the exact next step to resume; 4) anything to watch out for. Write the report in the ` +
+  `language your task asks its results in, else in the language your task is written in, not ` +
+  `in the language of this note.`
 
 const AGENT_CUTOFF =
   `${TAG} Tools cut off: the session credit is almost used up. Call no more tools. Write your ` +
@@ -147,7 +149,9 @@ const mainNote = (cfg: Config, trigger: string, agents: number, memoPath: string
   `agent): before ending any turn, check whether any agent is still running, and never end a ` +
   `turn just to wait for reports that may already be in. Write it to ${memoPath}, fully ` +
   `replacing the provisional file there: overall goal, each agent's state (done / partial / next ` +
-  `step / files), decisions made, and how to resume. Then stop. Past 100% of the credit, paid ` +
+  `step / files), decisions made, and how to resume. Write the memo in the language the user ` +
+  `writes in (that of their latest messages if they switched), not in the language of this ` +
+  `note. Then stop. Past 100% of the credit, paid ` +
   `overage of at most ${usd(cfg.budgetUsd)} is allowed for this clean stop only: be concise.`
 
 const haltText = (cfg: Config, s: CleanEndStatus) => {

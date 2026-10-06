@@ -27,6 +27,8 @@ As soon as the stop starts, the mod writes a provisional `CLEAN-END-OF-SESSION_<
 
 The session ends once that memo is written, or after two orchestrator turns that did not write it.
 
+The memo and the agents' status reports are written in your language: the language you prompt in, even though the mod's own messages are in English. The provisional memo keeps its few headings in English.
+
 ## Settings
 
 In `/config`, the mod's settings are folded under a single **▸ clean-end-of-session** row, so they don't clutter the menu.

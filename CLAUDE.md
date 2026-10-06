@@ -50,5 +50,5 @@ Phases (`CleanEndStatus.phase`): `armed` → `stopping` → `overage` (a window 
 
 ## Conventions
 
-- Every text the mod shows or sends (model notes, toasts, band, command output, memo) is in English.
+- Every text the mod shows or sends (model notes, toasts, band, command output, provisional memo) is in English. The notes ask the orchestrator to write the memo, and the subagents their reports, in the user's language: keep that sentence in `mainNote` and `agentWarning`.
 - Release: bump `version` in both `plugin.json` and `marketplace.json`, update the tested Claude Code version in `README.md`, commit, then tag `vX.Y.Z` with a GitHub release. `claude plugin update` relies on the version number.
