@@ -12,7 +12,7 @@
       "name": "clean-end-of-session",
       "source": "./",
       "description": "Winds agents down cleanly as the session's credit runs out and has the orchestrator write a resume memo.",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "license": "MIT",
       "keywords": [
         "usage-limits",

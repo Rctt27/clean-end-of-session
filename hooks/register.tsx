@@ -201,19 +201,21 @@ const mainNote = (cfg: Config, trigger: string, agents: number, memoPath: string
   `note. Then stop. Past 100% of the credit, paid ` +
   `overage of at most ${usd(cfg.budgetUsd)} is allowed for this clean stop only: be concise.`
 
-// `back` is when the credit is back (whenText), null when it already is.
+// How to pick the work up again; `back` is when the credit is back
+// (whenText), null when it already is.
+const resumeHint = (back: string | null) =>
+  back === null
+    ? `The credit is below the thresholds: /${NAME} resume picks the work up.`
+    : `Credit back ${back}: /${NAME} resume then picks the work up.`
+
 const haltText = (cfg: Config, s: CleanEndStatus, back: string | null) => {
   const why =
     s.phase === 'braked'
       ? `Overage budget used up (${usd(s.spentUsd)} of ${usd(cfg.budgetUsd)}).`
       : `Session stopped cleanly (${s.trigger ?? 'threshold reached'}).`
   const memo = s.memoPath === null ? '' : ` Resume memo: ${s.memoPath}.`
-  const resume =
-    back === null
-      ? `The credit is below the thresholds: /${NAME} resume picks the work up.`
-      : `Credit back ${back}: /${NAME} resume then picks the work up.`
 
-  return `${TAG} ${why}${memo} No request was sent to the model. ${resume}`
+  return `${TAG} ${why}${memo} No request was sent to the model. ${resumeHint(back)}`
 }
 
 const resumePrompt = (memoPath: string) =>
@@ -392,7 +394,10 @@ async function startStop($: Engine, cfg: Config, top: SessionRateLimit | null, t
   await update($, status, () => stop)
 
   if (memoPath === null) {
-    $.ui.toast(`${NAME}: ${trigger}, nothing running. No more requests will leave.`)
+    $.ui.toast(
+      `${NAME}: ${trigger}, nothing running. No more requests will leave. ` +
+        resumeHint(await creditBack($, cfg)),
+    )
     return
   }
 
@@ -449,7 +454,7 @@ async function halt($: Engine, cfg: Config, phase: 'stopped' | 'braked') {
   $.ui.toast(
     (phase === 'braked'
       ? `${NAME}: overage budget used up, no more requests leave.`
-      : `${NAME}: clean stop complete.`) + (back === null ? '' : ` Credit back ${back}.`),
+      : `${NAME}: clean stop complete.`) + ` ${resumeHint(back)}`,
   )
 }
 

@@ -19,6 +19,7 @@ type World = {
   usd: { value: number }
   requests: { value: number }
   prompts: string[]
+  toasts: string[]
   limits: SessionRateLimit[]
   clock: MockClock
 }
@@ -45,12 +46,17 @@ function world(on: On, agents: AgentInfo[], where: Where = {}): World {
     usd: { value: 10 },
     requests: { value: 0 },
     prompts: [],
+    toasts: [],
     limits: where.limits ?? [{ kind: 'five_hour', percentUsed: 90, resetsAt: RESETS_AT }],
     clock: mock.clock(on, { now: NOW }),
   }
   mock.store(on, where.store)
   on('session.measure', (_$, e) => ({ changed: e.changed }))
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', (_$, e) => {
+    w.toasts.push(e.text)
+
+    return { value: undefined }
+  })
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('agent.list', () => ({ value: agents }))
   on('session.cwd', () => ({ value: '/proj' }))
@@ -511,4 +517,21 @@ test('resume waits for a clean stop under way to end', async ($, on) => {
   await w.clock.set(Date.parse(RESETS_AT) + 60_000)
 
   expect(await command($, 'resume')).toMatch(/clean stop is under way/)
+})
+
+test('the end of the stop says to resume once the credit is back', async ($, on) => {
+  const agents = [AGENT]
+  const w = world(on, agents)
+  await stopCleanly($, w, agents)
+
+  expect(w.toasts.at(-1)).toMatch(
+    new RegExp(`clean stop complete\\. Credit back ${BACK.source}: /clean-end-of-session resume then picks the work up\\.$`),
+  )
+})
+
+test('a stop with nothing running says to resume too', async ($, on) => {
+  const w = world(on, [])
+  await $.session.measure(measure(90, 10))
+
+  expect(w.toasts.at(-1)).toMatch(/nothing running\. No more requests will leave\. Credit back .*\/clean-end-of-session resume/)
 })
