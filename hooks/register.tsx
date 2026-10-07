@@ -14,6 +14,11 @@ const MAX_IDLE_TURNS = 2
 const HANDBACK_TOOL = 'SubagentHandback'
 // The /config row that folds the mod's other rows away, like a chevron.
 const TOGGLE_KEY = `${NAME}.showSettings`
+// `$.store` keys, kept between sessions: the last credit reading and the last
+// memo, so a fresh session can still tell when to resume and from what.
+const CREDIT_KEY = 'credit'
+const MEMO_KEY = 'memoPath'
+const MEMO_FILE = /^CLEAN-END-OF-SESSION_.*\.md$/
 
 const ARMED: CleanEndStatus = {
   phase: 'armed',
@@ -77,6 +82,48 @@ const thresholdsText = (cfg: Config) =>
 
 const describeWindow =(w: SessionRateLimit | null) =>
   w === null ? 'credit unknown' : `${w.kind} at ${w.percentUsed}%`
+
+// The windows still over their threshold. A reading taken before its window
+// reset counts as reset: once the brake holds, no request refreshes it.
+const blockingWindows = (cfg: Config, windows: readonly SessionRateLimit[], now: number) =>
+  windows.filter(
+    w =>
+      w.percentUsed >= thresholdOf(cfg, w.kind) &&
+      !(w.resetsAt !== undefined && Date.parse(w.resetsAt) <= now),
+  )
+
+// When the last blocking window resets: NaN when one of them gives no time.
+const lastResetOf = (windows: readonly SessionRateLimit[]) =>
+  Math.max(...windows.map(w => (w.resetsAt === undefined ? NaN : Date.parse(w.resetsAt))))
+
+const pad = (n: number) => String(n).padStart(2, '0')
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+const dayOf = (at: Date, now: Date) => {
+  const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const days = Math.round((startOf(at) - startOf(now)) / 86_400_000)
+  if (days === 0) return 'today'
+  if (days === 1) return 'tomorrow'
+
+  return `${DAYS[at.getDay()]} ${at.getDate()} ${MONTHS[at.getMonth()]}`
+}
+
+const remainingOf = (ms: number) => {
+  const minutes = Math.ceil(ms / 60_000)
+  if (minutes < 60) return `in ${minutes} min`
+  if (minutes < 24 * 60) return `in ${Math.floor(minutes / 60)} h ${pad(minutes % 60)}`
+
+  return `in ${Math.floor(minutes / 1440)} d ${Math.floor((minutes % 1440) / 60)} h`
+}
+
+// A reset time in the person's local time: `today 18:40 (in 2 h 13)`.
+const whenText = (at: number, now: number) => {
+  if (Number.isNaN(at)) return 'at an unknown time'
+  const date = new Date(at)
+
+  return `${dayOf(date, new Date(now))} ${pad(date.getHours())}:${pad(date.getMinutes())} (${remainingOf(at - now)})`
+}
 
 const stamp = (ms: number) =>
   new Date(ms).toISOString().slice(0, 16).replace('T', '_').replace(':', 'h')
@@ -154,18 +201,29 @@ const mainNote = (cfg: Config, trigger: string, agents: number, memoPath: string
   `note. Then stop. Past 100% of the credit, paid ` +
   `overage of at most ${usd(cfg.budgetUsd)} is allowed for this clean stop only: be concise.`
 
-const haltText = (cfg: Config, s: CleanEndStatus) => {
+// `back` is when the credit is back (whenText), null when it already is.
+const haltText = (cfg: Config, s: CleanEndStatus, back: string | null) => {
   const why =
     s.phase === 'braked'
       ? `Overage budget used up (${usd(s.spentUsd)} of ${usd(cfg.budgetUsd)}).`
       : `Session stopped cleanly (${s.trigger ?? 'threshold reached'}).`
   const memo = s.memoPath === null ? '' : ` Resume memo: ${s.memoPath}.`
+  const resume =
+    back === null
+      ? `The credit is below the thresholds: /${NAME} resume picks the work up.`
+      : `Credit back ${back}: /${NAME} resume then picks the work up.`
 
-  return (
-    `${TAG} ${why}${memo} No request was sent to the model. ` +
-    `/${NAME} reset to resume once the credit is back, /${NAME} off to ignore the threshold.`
-  )
+  return `${TAG} ${why}${memo} No request was sent to the model. ${resume}`
 }
+
+const resumePrompt = (memoPath: string) =>
+  `${TAG} The credit is back: resume the work a clean stop interrupted. Read the resume memo at ` +
+  `${memoPath} first, then carry on from it: relaunch each unfinished task from its next step, ` +
+  `as subagents where the memo had them, and check the files it lists as half done before ` +
+  `building on them. Answer in the language the memo is written in, not in the language of ` +
+  `this note.`
+
+const notReset = (back: string) => `Your credits have not been reset yet. Reset time: ${back}.`
 
 async function activeAgents($: Engine) {
   return (await $.agent.list()).filter(a => ACTIVE_AGENT.has(a.status))
@@ -249,6 +307,71 @@ async function memoDir($: Engine) {
   return repo !== null && isWithin(root, repo.root) ? repo.root : root
 }
 
+// The session's credit reading, else the last one kept: a fresh session has
+// none before its first request.
+async function readWindows($: Engine): Promise<readonly SessionRateLimit[]> {
+  const live = (await $.session.usage()).rateLimits
+  if (live.length > 0) return live
+  const kept = await $.store.get(CREDIT_KEY).catch(() => undefined)
+
+  return Array.isArray(kept) ? (kept as SessionRateLimit[]) : []
+}
+
+// When the credit is back, as whenText says it, or null when it already is.
+async function creditBack($: Engine, cfg: Config) {
+  const now = await $.clock.now()
+  const blocking = blockingWindows(cfg, await readWindows($), now)
+
+  return blocking.length === 0 ? null : whenText(lastResetOf(blocking), now)
+}
+
+async function haltMessage($: Engine, cfg: Config, s: CleanEndStatus) {
+  return haltText(cfg, s, await creditBack($, cfg))
+}
+
+// The memo to resume from: this session's, the last one kept, else the newest
+// at the root the memos go to.
+async function findMemo($: Engine, s: CleanEndStatus) {
+  const kept = await $.store.get(MEMO_KEY).catch(() => undefined)
+  for (const path of [s.memoPath, typeof kept === 'string' ? kept : null]) {
+    if (path !== null && (await $.fs.exists(path))) return path
+  }
+  const dir = await memoDir($)
+  const newest = (await $.fs.list(dir).catch(() => []))
+    .filter(f => f.kind === 'file' && MEMO_FILE.test(f.name))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs || b.name.localeCompare(a.name))[0]
+
+  return newest === undefined ? null : joinPath(dir, newest.name)
+}
+
+// Hands the orchestrator its resume prompt as a turn of its own, once idle.
+async function submitResume($: Engine, memoPath: string) {
+  const sent = await $.prompt.submit({ text: resumePrompt(memoPath) }).catch(() => null)
+  if (sent === null || sent.drop !== undefined) {
+    $.ui.toast(`${NAME}: the resume prompt did not go through${sent?.drop ? ` (${sent.drop})` : ''}.`)
+  }
+}
+
+// `/clean-end-of-session resume`: re-arms and relaunches the work from the
+// memo, or says why not.
+async function resume($: Engine, cfg: Config) {
+  const s = await read($, status)
+  if (isWatching(s)) return `A clean stop is under way: resume once it has ended.`
+  const back = await creditBack($, cfg)
+  if (back !== null) return notReset(back)
+  const memoPath = await findMemo($, s)
+  if (memoPath === null) {
+    return `No resume memo found in ${await memoDir($)}. /${NAME} on re-arms without resuming.`
+  }
+
+  await update($, status, () => ARMED)
+  // A command may not submit a prompt itself (it would wait on its own run):
+  // a timer submits it once the command has answered.
+  $.clock.after(1, () => submitResume($, memoPath))
+
+  return `Re-armed at ${thresholdsText(cfg)}. Resuming from ${memoPath}.`
+}
+
 async function startStop($: Engine, cfg: Config, top: SessionRateLimit | null, trigger: string) {
   if ((await read($, status)).phase !== 'armed') return
 
@@ -274,6 +397,7 @@ async function startStop($: Engine, cfg: Config, top: SessionRateLimit | null, t
   }
 
   await writeFallback($, stop)
+  await $.store.set(MEMO_KEY, memoPath).catch(() => undefined)
   await Promise.all(agents.map(a => warnAgent($, cfg, a.id, trigger)))
   await warnMain($, mainNote(cfg, trigger, agents.length, memoPath))
   $.ui.toast(`${NAME}: ${trigger}, clean stop of ${agents.length} agent(s) started.`)
@@ -307,24 +431,25 @@ async function recordReport($: Engine, id: string, report: string, agentStatus: 
 
 // A main turn ended with every agent done: the stop is over once the memo is
 // written, or after MAX_IDLE_TURNS turns that did not write it.
-async function settleMainTurn($: Engine, s: CleanEndStatus) {
+async function settleMainTurn($: Engine, cfg: Config, s: CleanEndStatus) {
   const isWritten = s.memoPath === null || (await isMemoReplaced($, s.memoPath))
   if (isWritten || s.idleTurns + 1 >= MAX_IDLE_TURNS) {
-    await halt($, 'stopped')
+    await halt($, cfg, 'stopped')
     return
   }
   await update($, status, cur => (isWatching(cur) ? { ...cur, idleTurns: cur.idleTurns + 1 } : cur))
 }
 
-async function halt($: Engine, phase: 'stopped' | 'braked') {
+async function halt($: Engine, cfg: Config, phase: 'stopped' | 'braked') {
   await update($, status, s => (isWatching(s) ? { ...s, phase } : s))
   const s = await read($, status)
   if (s.phase !== phase) return
   await writeFallback($, s)
+  const back = await creditBack($, cfg)
   $.ui.toast(
-    phase === 'braked'
+    (phase === 'braked'
       ? `${NAME}: overage budget used up, no more requests leave.`
-      : `${NAME}: clean stop complete.`,
+      : `${NAME}: clean stop complete.`) + (back === null ? '' : ` Credit back ${back}.`),
   )
 }
 
@@ -333,7 +458,7 @@ async function checkBudget($: Engine, cfg: Config, costUsd: number | undefined) 
   if (s.phase !== 'overage' || s.baselineUsd === null || costUsd === undefined) return
   const spent = Math.max(0, costUsd - s.baselineUsd)
   await update($, status, cur => (cur.phase === 'overage' ? { ...cur, spentUsd: spent } : cur))
-  if (spent >= cfg.budgetUsd) await halt($, 'braked')
+  if (spent >= cfg.budgetUsd) await halt($, cfg, 'braked')
 }
 
 async function statusText($: Engine, cfg: Config) {
@@ -341,9 +466,11 @@ async function statusText($: Engine, cfg: Config) {
   const usage = await $.session.usage()
   const windows = usage.rateLimits.map(w => `${w.kind} ${w.percentUsed}%`).join(', ') || 'no reading yet'
   const warned = Object.entries(s.warned)
+  const back = await creditBack($, cfg)
   const lines = [
     `Phase: ${s.phase} (thresholds ${thresholdsText(cfg)}, overage budget ${usd(cfg.budgetUsd)}, grace ${cfg.graceCalls} calls)`,
     `Credit: ${windows}`,
+    back === null ? null : `Credit back: ${back}`,
     s.trigger === null ? null : `Trigger: ${s.trigger}`,
     s.phase === 'overage' || s.phase === 'braked' ? `Estimated overage: ${usd(s.spentUsd)}` : null,
     warned.length === 0 ? null : `Agents warned: ${warned.map(([id, n]) => `${id} (${n} calls)`).join(', ')}`,
@@ -366,7 +493,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: NAME,
       description: 'Wind agents down cleanly before the session credit runs out',
-      argumentHint: '[status|stop|reset|off|on]',
+      argumentHint: '[status|stop|resume|on|off]',
       immediate: true,
     })
     // A change of the toggle reloads the module: redraw the rows it folds.
@@ -392,6 +519,9 @@ export const register: Register = (on, options) => {
   on('session.measure', async ($, e, next) => {
     const top = peakOf(e.rateLimits)
     const crossed = crossedWindow(cfg, e.rateLimits)
+    if (e.changed.includes('rateLimits') && e.rateLimits.length > 0) {
+      await $.store.set(CREDIT_KEY, e.rateLimits).catch(() => undefined)
+    }
 
     if (crossed !== null) {
       await startStop($, cfg, crossed, describeWindow(crossed))
@@ -420,7 +550,7 @@ export const register: Register = (on, options) => {
     }
     isMainBusy = false
     const s = await read($, status)
-    if (isWatching(s) && (await activeAgents($)).length === 0) await settleMainTurn($, s)
+    if (isWatching(s) && (await activeAgents($)).length === 0) await settleMainTurn($, cfg, s)
 
     return next(e)
   })
@@ -428,7 +558,7 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     const s = await read($, status)
     if (isHalted(s)) {
-      const text = haltText(cfg, s)
+      const text = await haltMessage($, cfg, s)
       yield { kind: 'text' as const, index: 0, text }
 
       return {
@@ -463,7 +593,7 @@ export const register: Register = (on, options) => {
 
       return next(e)
     }
-    if (isHalted(s)) return { deny: haltText(cfg, s) }
+    if (isHalted(s)) return { deny: await haltMessage($, cfg, s) }
     if (!isWatching(s) || e.agentId === undefined) return next(e)
 
     const id = e.agentId
@@ -491,7 +621,10 @@ export const register: Register = (on, options) => {
 
       return { text: `Clean stop: ${s.phase}${s.memoPath === null ? '' : `, memo ${s.memoPath}`}.` }
     }
-    if (arg === 'reset' || arg === 'on') {
+    if (arg === 'resume') {
+      return { text: await resume($, cfg) }
+    }
+    if (arg === 'on') {
       await update($, status, () => ARMED)
 
       return { text: `Re-armed: the clean stop will start at ${thresholdsText(cfg)}.` }
@@ -553,14 +686,16 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey || s.phase === 'armed' || s.phase === 'off') return next(e)
 
     const { Box, Text } = $.ui.resolve(e)
+    const back = isHalted(s) ? await creditBack($, cfg) : null
+    const resumeHint = back === null ? `/${NAME} resume` : `credit back ${back} · /${NAME} resume`
     const label =
       s.phase === 'stopping'
         ? `Clean stop under way (${s.trigger}) · ${Object.keys(s.warned).length} agent(s) warned`
         : s.phase === 'overage'
           ? `Clean stop in overage: ${usd(s.spentUsd)} / ${usd(cfg.budgetUsd)}`
           : s.phase === 'braked'
-            ? `Overage budget used up · /${NAME} reset to resume`
-            : `Session stopped cleanly · /${NAME} reset to resume`
+            ? `Overage budget used up · ${resumeHint}`
+            : `Session stopped cleanly · ${resumeHint}`
 
     return (
       <Box flexDirection="column">

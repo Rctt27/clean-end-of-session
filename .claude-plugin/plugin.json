@@ -1,6 +1,6 @@
 {
   "name": "clean-end-of-session",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Winds agents down cleanly as the session's credit runs out and has the orchestrator write a resume memo.",
   "author": {
     "name": "Renaud Couttet",
