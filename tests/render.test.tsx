@@ -2,11 +2,11 @@ import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 const SURFACES = ['terminal', 'desktop'] as const
-const PLUGIN = 'clean-end-of-session'
+const PLUGIN = 'graceful-stop'
 
 const NOTE =
-  '[clean-end-of-session] The Claude session credit has reached five_hour at 90%. Clean stop started.'
-const BRAKE = '[clean-end-of-session] Session stopped cleanly (five_hour at 90%). No request was sent to the model.'
+  '[graceful-stop] The Claude session credit has reached five_hour at 90%. Clean stop started.'
+const BRAKE = '[graceful-stop] Session stopped cleanly (five_hour at 90%). No request was sent to the model.'
 
 // What the engine draws beneath the plugin when the mod passes a row on.
 function engine(on: On) {
@@ -36,7 +36,7 @@ test('the mod notes to the orchestrator are drawn under its yellow label', async
   engine(on)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: PLUGIN, surface, ...userRow(NOTE) })
-    expect(await ui.find({ type: 'Text', text: '⏹ clean-end-of-session' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '⏹ graceful-stop' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^The Claude session credit has reached/ })).toBeDefined()
     expect(await ui.find({ key: 'engine' })).toBeUndefined()
     await ui.unmount()
@@ -52,7 +52,7 @@ test('the brake answers are drawn as the mod, not as a reply of the model', asyn
       component: 'AssistantMessage',
       props: { text: BRAKE, isFirstOfReply: true } as never,
     })
-    expect(await ui.find({ type: 'Text', text: '⏹ clean-end-of-session' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '⏹ graceful-stop' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^Session stopped cleanly/ })).toBeDefined()
     await ui.unmount()
   }
@@ -62,7 +62,7 @@ test('every other row is left to the engine', async ($, on) => {
   engine(on)
   for (const surface of SURFACES) {
     const typed = await $.ui.mount({ plugin: PLUGIN, surface, ...userRow('Analyse my repositories please') })
-    expect(await typed.find({ type: 'Text', text: '⏹ clean-end-of-session' })).toBeUndefined()
+    expect(await typed.find({ type: 'Text', text: '⏹ graceful-stop' })).toBeUndefined()
     await typed.unmount()
 
     const reply = await $.ui.mount({
@@ -71,7 +71,7 @@ test('every other row is left to the engine', async ($, on) => {
       component: 'AssistantMessage',
       props: { text: 'Here is the analysis.', isFirstOfReply: true } as never,
     })
-    expect(await reply.find({ type: 'Text', text: '⏹ clean-end-of-session' })).toBeUndefined()
+    expect(await reply.find({ type: 'Text', text: '⏹ graceful-stop' })).toBeUndefined()
     await reply.unmount()
   }
 })

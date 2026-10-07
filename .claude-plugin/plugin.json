@@ -1,13 +1,13 @@
 {
-  "name": "clean-end-of-session",
+  "name": "graceful-stop",
   "version": "0.4.0",
   "description": "Winds agents down cleanly as the session's credit runs out and has the orchestrator write a resume memo.",
   "author": {
     "name": "Renaud Couttet",
     "url": "https://github.com/Rctt27"
   },
-  "homepage": "https://github.com/Rctt27/clean-end-of-session",
-  "repository": "https://github.com/Rctt27/clean-end-of-session",
+  "homepage": "https://github.com/Rctt27/graceful-stop",
+  "repository": "https://github.com/Rctt27/graceful-stop",
   "license": "MIT",
   "keywords": [
     "usage-limits",
@@ -20,37 +20,37 @@
   "userConfig": {
     "showSettings": {
       "type": "boolean",
-      "title": "clean-end-of-session",
-      "description": "Shows or hides the clean-end-of-session settings below.",
+      "title": "graceful-stop",
+      "description": "Shows or hides the graceful-stop settings below.",
       "default": false
     },
     "armAtStart": {
       "type": "boolean",
-      "title": "clean-end-of-session · Arm at session start",
+      "title": "graceful-stop · Arm at session start",
       "description": "Arms the clean stop in every new session. Off, each session starts off and the panel's On button arms it.",
       "default": true
     },
     "sessionThreshold": {
       "type": "number",
-      "title": "clean-end-of-session · Session trigger threshold (%)",
+      "title": "graceful-stop · Session trigger threshold (%)",
       "description": "Share of the 5-hour session window used that starts the clean stop.",
       "default": 90
     },
     "weeklyThreshold": {
       "type": "number",
-      "title": "clean-end-of-session · Weekly trigger threshold (%)",
+      "title": "graceful-stop · Weekly trigger threshold (%)",
       "description": "Share of the 7-day window used that starts the clean stop; its last few percent are about one whole session.",
       "default": 95
     },
     "overageBudgetUsd": {
       "type": "number",
-      "title": "clean-end-of-session · Overage budget ($)",
+      "title": "graceful-stop · Overage budget ($)",
       "description": "Estimated spend allowed past 100 % to finish the clean stop; once spent, no request leaves anymore.",
       "default": 2
     },
     "graceToolCalls": {
       "type": "number",
-      "title": "clean-end-of-session · Grace tool calls",
+      "title": "graceful-stop · Grace tool calls",
       "description": "Tool calls each subagent keeps after its warning, before its tools are cut off.",
       "default": 5
     }

@@ -2,6 +2,7 @@
 **/.claude-plugin/types/
 
 # Resume memos a clean stop leaves behind.
+GRACEFUL-STOP_*.md
 CLEAN-END-OF-SESSION_*.md
 
 node_modules/

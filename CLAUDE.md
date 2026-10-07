@@ -1,4 +1,4 @@
-# clean-end-of-session
+# graceful-stop
 
 A Claude Code mod (a plugin of function hooks) that winds subagents down cleanly before the subscription credit runs out and has the orchestrator write a resume memo. See `README.md` for the user-facing behaviour.
 
@@ -7,8 +7,8 @@ The repository is both the plugin and its own marketplace: `.claude-plugin/plugi
 ## Layout
 
 - `hooks/register.tsx`: the whole mod, one hooks module. Helpers at the top, `register(on, options)` at the bottom with every hook.
-- `types/index.d.ts`: the `$.state` contract (`CleanEndStatus`, `CleanEndAgent`). Every `$.state` key the module uses must be declared here.
-- `tests/clean-end.test.ts`: `claude plugin test` suite; `world()` mocks the engine beneath the plugin.
+- `types/index.d.ts`: the `$.state` contract (`GracefulStopStatus`, `GracefulStopAgent`). Every `$.state` key the module uses must be declared here.
+- `tests/graceful-stop.test.ts`: `claude plugin test` suite; `world()` mocks the engine beneath the plugin.
 - `.claude-plugin/types/` is written by Claude Code at each load and is git-ignored. It holds the API declarations for the version in use; grep it (`claude-code/index.d.ts`) for an event or a `$` method before using it.
 
 ## Checks (run all three before committing)
@@ -19,11 +19,11 @@ claude plugin test .
 tsc -p .            # needs .claude-plugin/types, laid only when the mod is loaded with --plugin-dir
 ```
 
-For a live run, load the mod with `claude --plugin-dir .` (saves hot-reload), launch two or three background subagents on a long read-only task, then `/clean-end-of-session stop`.
+For a live run, load the mod with `claude --plugin-dir .` (saves hot-reload), launch two or three background subagents on a long read-only task, then `/graceful-stop stop`.
 
 ## How it works
 
-Phases (`CleanEndStatus.phase`): `armed` → `stopping` → `overage` (a window at 100%) → `stopped` | `braked`; plus `off`.
+Phases (`GracefulStopStatus.phase`): `armed` → `stopping` → `overage` (a window at 100%) → `stopped` | `braked`; plus `off`.
 
 - `session.measure` reads the rate-limit windows and starts the stop: `five_hour` uses `sessionThreshold` (90), `seven_day` uses `weeklyThreshold` (95), any other kind the session one.
 - `agent.spawn` refuses new subagents once the stop started.
@@ -31,7 +31,8 @@ Phases (`CleanEndStatus.phase`): `armed` → `stopping` → `overage` (a window 
 - `turn.step` is the brake: in `stopped` / `braked` it answers itself, so no request reaches the API.
 - `turn.complete`: a subagent's run records its report; a main turn with no agent left ends the stop once the memo is written, or after `MAX_IDLE_TURNS` (2) turns that did not write it.
 - The memo goes to the git repository root containing `$.session.root()`, else to that root. The provisional memo starts with `FALLBACK_MARK`; the mod never overwrites a file without it.
-- `/clean-end-of-session resume` (`resume()`): refuses while a stop is under way or a window is still over its threshold (`blockingWindows`), says when the last one resets (`whenText`, `today 18:40 (in 2 h 13)`), else re-arms and submits `resumePrompt` naming the memo (`findMemo`: this session's, the one kept in `$.store`, else the newest `CLEAN-END-OF-SESSION_*.md` at the memo root).
+- `/graceful-stop resume` (`resume()`): refuses while a stop is under way or a window is still over its threshold (`blockingWindows`), says when the last one resets (`whenText`, `today 18:40 (in 2 h 13)`), else re-arms and submits `resumePrompt` naming the memo (`findMemo`: this session's, the one kept in `$.store`, else the newest `GRACEFUL-STOP_*.md` at the memo root).
+- `/gs` (`ALIAS`) is a second registered command with the same `runCommand` and the same card; `COMMANDS` lists both, and each loop in `register` hooks both.
 - `drawPanel` draws the mod's card, both as the `AbovePrompt` band and as the command's `CommandOutput` row (the model still reads the command's text; the row adds it on top as a `› ` notice, none for `status`). While armed, its header lists the settings (`settingsText`): thresholds, overage budget, grace calls.
 - The `AbovePrompt` band is always drawn (except while a survey holds it): the phase (`phaseLabel`), a gauge per window (`gaugesOf` → `gaugeCells`: eighth-block fill, green → amber → red by `gradientAt`, a `▏` mark at the threshold; a `Raster` on the terminal, the same cells as `textRuns` elsewhere), and two Buttons, `toggle` (hotkey `o`, same as `off`/`on`) and `resume` (hotkey `r`, `pressResume`: `resume()` said in a toast). `resume` is dimmed, never hidden, while `resume()` would refuse or `isWorking`.
 - `armAtStart` (`/config`, default true): false makes `session.start` put a fresh session in `off`.
@@ -49,9 +50,10 @@ Phases (`CleanEndStatus.phase`): `armed` → `stopping` → `overage` (a window 
 - **`session.start` fires again on each reload:** the `started` atom keeps `armAtStart` from turning a session the person armed back off.
 - **`Raster` is the terminal's:** test `e.surface === 'terminal'`, not `'Raster' in ui`: another surface's table can hold it as a fragment that draws nothing. Its `cells` is base64 of u32 triplets; the module encodes it itself (`toBase64`).
 - **The band's fold is the person's:** `[-]` / `ctrl+x ctrl+a` folds it and Claude Code remembers it; no API unfolds it. The command's card is the way to show the state without a click.
+- **Renamed from `clean-end-of-session`** (up to 0.4.0): `MEMO_FILE` still matches the memos written under that name. The `$.store` is the plugin's, so the rename started it empty.
 - **Module variables reset on every reload** (each save, each `/config` change). State that must survive goes in `$.state` (the `status` atom).
-- **Yellow rows:** `ui.render` hooks on `UserMessage` and `AssistantMessage` redraw any row whose text starts with `[clean-end-of-session]` in `MOD_COLOR` under `MOD_LABEL`; the command's output is the card instead. Every message the mod sends must keep that tag, or it will read as the agent's own. Drawing only: the stored row and what the model reads are unchanged.
-- **`/config` chevron:** the `showSettings` boolean is relabelled `▸`/`▾ clean-end-of-session` by a `config.describe` hook, which hides the other rows while it is `false`. The menu has no real groups.
+- **Yellow rows:** `ui.render` hooks on `UserMessage` and `AssistantMessage` redraw any row whose text starts with `[graceful-stop]` in `MOD_COLOR` under `MOD_LABEL`; the command's output is the card instead. Every message the mod sends must keep that tag, or it will read as the agent's own. Drawing only: the stored row and what the model reads are unchanged.
+- **`/config` chevron:** the `showSettings` boolean is relabelled `▸`/`▾ graceful-stop` by a `config.describe` hook, which hides the other rows while it is `false`. The menu has no real groups.
 
 ## Test kit quirks
 

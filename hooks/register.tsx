@@ -1,9 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register, ResolveInput, SessionRateLimit } from 'claude-code'
 
-import type { CleanEndAgent, CleanEndCredit, CleanEndStatus } from '../types'
+import type { GracefulStopAgent, GracefulStopCredit, GracefulStopStatus } from '../types'
 
-const NAME = 'clean-end-of-session'
+const NAME = 'graceful-stop'
+// A short name for the same command: /gs.
+const ALIAS = 'gs'
+const COMMANDS = [NAME, ALIAS]
 const TAG = `[${NAME}]`
 const FALLBACK_MARK = `<!-- ${NAME}:fallback -->`
 const ACTIVE_AGENT = new Set(['pending', 'running', 'waiting'])
@@ -19,9 +22,10 @@ const TOGGLE_KEY = `${NAME}.showSettings`
 const CREDIT_KEY = 'credit'
 const CREDIT_AT_KEY = 'creditAt'
 const MEMO_KEY = 'memoPath'
-const MEMO_FILE = /^CLEAN-END-OF-SESSION_.*\.md$/
+// Memos written before the mod was renamed keep the old prefix.
+const MEMO_FILE = /^(GRACEFUL-STOP|CLEAN-END-OF-SESSION)_.*\.md$/
 
-const ARMED: CleanEndStatus = {
+const ARMED: GracefulStopStatus = {
   phase: 'armed',
   trigger: null,
   resetsAt: null,
@@ -33,12 +37,12 @@ const ARMED: CleanEndStatus = {
   idleTurns: 0,
 }
 
-const OFF: CleanEndStatus = { ...ARMED, phase: 'off' }
+const OFF: GracefulStopStatus = { ...ARMED, phase: 'off' }
 
-const status = atom({ plugin: 'clean-end-of-session', key: 'status' } as const, ARMED)
-const credit = atom({ plugin: 'clean-end-of-session', key: 'credit' } as const, null)
-const minute = atom({ plugin: 'clean-end-of-session', key: 'minute' } as const, 0)
-const started = atom({ plugin: 'clean-end-of-session', key: 'started' } as const, false)
+const status = atom({ plugin: 'graceful-stop', key: 'status' } as const, ARMED)
+const credit = atom({ plugin: 'graceful-stop', key: 'credit' } as const, null)
+const minute = atom({ plugin: 'graceful-stop', key: 'minute' } as const, 0)
+const started = atom({ plugin: 'graceful-stop', key: 'started' } as const, false)
 
 type Engine = EngineInterface
 type Config = {
@@ -56,8 +60,8 @@ type Config = {
 // the next clean stop may judge the session idle and write no memo.
 let isMainBusy = false
 
-const isWatching = (s: CleanEndStatus) => s.phase === 'stopping' || s.phase === 'overage'
-const isHalted = (s: CleanEndStatus) => s.phase === 'stopped' || s.phase === 'braked'
+const isWatching = (s: GracefulStopStatus) => s.phase === 'stopping' || s.phase === 'overage'
+const isHalted = (s: GracefulStopStatus) => s.phase === 'stopped' || s.phase === 'braked'
 
 const usd = (n: number) => `$${n.toFixed(2)}`
 
@@ -156,7 +160,7 @@ const joinPath = (dir: string, file: string) => {
   return dir.replace(/[\\/]+$/, '') + sep + file
 }
 
-const toRecord = (a: AgentInfo): CleanEndAgent => ({
+const toRecord = (a: AgentInfo): GracefulStopAgent => ({
   id: a.id,
   description: a.description,
   type: a.type,
@@ -194,7 +198,7 @@ const isModText = (text: string) => text.trimStart().startsWith(TAG)
 // the engine prints before it.
 const modBody = (text: string) => {
   const body = text.trimStart()
-  const prefix = [TAG, `${NAME}:`].find(p => body.startsWith(p)) ?? ''
+  const prefix = [TAG, ...COMMANDS.map(c => `${c}:`)].find(p => body.startsWith(p)) ?? ''
 
   return body.slice(prefix.length).trim()
 }
@@ -221,7 +225,7 @@ const resumeHint = (back: string | null) =>
     ? `The credit is below the thresholds: /${NAME} resume picks the work up.`
     : `Credit back ${back}: /${NAME} resume then picks the work up.`
 
-const haltText = (cfg: Config, s: CleanEndStatus, back: string | null) => {
+const haltText = (cfg: Config, s: GracefulStopStatus, back: string | null) => {
   const why =
     s.phase === 'braked'
       ? `Overage budget used up (${usd(s.spentUsd)} of ${usd(cfg.budgetUsd)}).`
@@ -244,7 +248,7 @@ async function activeAgents($: Engine) {
   return (await $.agent.list()).filter(a => ACTIVE_AGENT.has(a.status))
 }
 
-const agentSection = (a: CleanEndAgent) => [
+const agentSection = (a: GracefulStopAgent) => [
   `### ${a.description}`,
   '',
   `- Type: ${a.type}`,
@@ -255,7 +259,7 @@ const agentSection = (a: CleanEndAgent) => [
   '',
 ]
 
-async function fallbackMemo($: Engine, s: CleanEndStatus) {
+async function fallbackMemo($: Engine, s: GracefulStopStatus) {
   const sessionId = await $.session.id()
   const now = new Date(await $.clock.now()).toISOString()
 
@@ -292,7 +296,7 @@ async function isMemoReplaced($: Engine, path: string) {
 
 // Writes the mod's own record of the stop, unless the orchestrator already
 // replaced it with the real memo; the agents' statuses are refreshed first.
-async function writeFallback($: Engine, s: CleanEndStatus) {
+async function writeFallback($: Engine, s: GracefulStopStatus) {
   if (s.memoPath === null || (await isMemoReplaced($, s.memoPath))) return
   const live = new Map((await $.agent.list()).map(a => [a.id, a.status as string]))
   const agents = s.agents.map(a => ({ ...a, status: live.get(a.id) ?? a.status }))
@@ -340,13 +344,13 @@ async function creditBack($: Engine, cfg: Config) {
   return blocking.length === 0 ? null : whenText(lastResetOf(blocking), now)
 }
 
-async function haltMessage($: Engine, cfg: Config, s: CleanEndStatus) {
+async function haltMessage($: Engine, cfg: Config, s: GracefulStopStatus) {
   return haltText(cfg, s, await creditBack($, cfg))
 }
 
 // The memo to resume from: this session's, the last one kept, else the newest
 // at the root the memos go to.
-async function findMemo($: Engine, s: CleanEndStatus) {
+async function findMemo($: Engine, s: GracefulStopStatus) {
   const kept = await $.store.get(MEMO_KEY).catch(() => undefined)
   for (const path of [s.memoPath, typeof kept === 'string' ? kept : null]) {
     if (path !== null && (await $.fs.exists(path))) return path
@@ -367,7 +371,7 @@ async function submitResume($: Engine, memoPath: string) {
   }
 }
 
-// `/clean-end-of-session resume`: re-arms and relaunches the work from the
+// `/graceful-stop resume`: re-arms and relaunches the work from the
 // memo, or says why not.
 async function resume($: Engine, cfg: Config) {
   const s = await read($, status)
@@ -393,9 +397,9 @@ async function startStop($: Engine, cfg: Config, top: SessionRateLimit | null, t
   const agents = await activeAgents($)
   const hasWork = agents.length > 0 || isMainBusy
   const memoPath = hasWork
-    ? joinPath(await memoDir($), `CLEAN-END-OF-SESSION_${stamp(await $.clock.now())}.md`)
+    ? joinPath(await memoDir($), `GRACEFUL-STOP_${stamp(await $.clock.now())}.md`)
     : null
-  const stop: CleanEndStatus = {
+  const stop: GracefulStopStatus = {
     ...ARMED,
     phase: hasWork ? 'stopping' : 'stopped',
     trigger,
@@ -424,7 +428,7 @@ async function startStop($: Engine, cfg: Config, top: SessionRateLimit | null, t
 // Keeps an agent the stop did not see at its start (spawned just before it).
 async function adoptAgent($: Engine, id: string) {
   const found = (await $.agent.list()).find(a => a.id === id)
-  const record: CleanEndAgent = found === undefined
+  const record: GracefulStopAgent = found === undefined
     ? { id, description: 'unknown task', type: 'unknown', status: 'running', report: null }
     : toRecord(found)
   await update($, status, s =>
@@ -449,7 +453,7 @@ async function recordReport($: Engine, id: string, report: string, agentStatus: 
 
 // A main turn ended with every agent done: the stop is over once the memo is
 // written, or after MAX_IDLE_TURNS turns that did not write it.
-async function settleMainTurn($: Engine, cfg: Config, s: CleanEndStatus) {
+async function settleMainTurn($: Engine, cfg: Config, s: GracefulStopStatus) {
   const isWritten = s.memoPath === null || (await isMemoReplaced($, s.memoPath))
   if (isWritten || s.idleTurns + 1 >= MAX_IDLE_TURNS) {
     await halt($, cfg, 'stopped')
@@ -634,7 +638,7 @@ const gaugesOf = (cfg: Config, windows: readonly SessionRateLimit[], columns: nu
     })
 
 // This session's reading, else the last one kept, which the band says is old.
-async function readCredit($: Engine): Promise<{ reading: CleanEndCredit | null; isKept: boolean }> {
+async function readCredit($: Engine): Promise<{ reading: GracefulStopCredit | null; isKept: boolean }> {
   const live = await read($, credit)
   if (live !== null) return { reading: live, isKept: false }
   const windows = await $.store.get(CREDIT_KEY).catch(() => undefined)
@@ -645,7 +649,7 @@ async function readCredit($: Engine): Promise<{ reading: CleanEndCredit | null; 
 }
 
 // The status badge: its word and colors, by phase.
-const BADGES: Record<CleanEndStatus['phase'], { word: string; fg: string; bg: string }> = {
+const BADGES: Record<GracefulStopStatus['phase'], { word: string; fg: string; bg: string }> = {
   armed: { word: 'ARMED', fg: '#86efac', bg: '#14532d' },
   off: { word: 'OFF', fg: '#d4d4d8', bg: '#3f3f46' },
   stopping: { word: 'STOPPING', fg: '#fcd34d', bg: '#78350f' },
@@ -659,7 +663,7 @@ const settingsText = (cfg: Config) =>
   `clean stop at ${cfg.sessionThreshold} % (5 h) · ${cfg.weeklyThreshold} % (7 d) · ` +
   `overage budget ${usd(cfg.budgetUsd)} · ${cfg.graceCalls} grace calls`
 
-const phaseDetail = (cfg: Config, s: CleanEndStatus, back: string | null) => {
+const phaseDetail = (cfg: Config, s: GracefulStopStatus, back: string | null) => {
   const whenBack = back === null ? 'credit is back' : `credit back ${back}`
   switch (s.phase) {
     case 'armed':
@@ -682,7 +686,7 @@ async function tick($: Engine) {
   await update($, minute, () => now)
 }
 
-// The band's Off / On button: the same as `/clean-end-of-session off|on`.
+// The band's Off / On button: the same as `/graceful-stop off|on`.
 async function toggle($: Engine) {
   await update($, status, s => (s.phase === 'off' ? ARMED : OFF))
 }
@@ -778,6 +782,35 @@ async function drawPanel($: Engine, cfg: Config, e: ResolveInput, o: PanelOption
   )
 }
 
+// `/graceful-stop <args>` and `/gs <args>`.
+async function runCommand($: Engine, cfg: Config, args: string) {
+  const arg = args.trim().toLowerCase() || 'status'
+
+  if (arg === 'stop') {
+    const top = peakOf((await $.session.usage()).rateLimits)
+    await update($, status, s => (s.phase === 'off' ? ARMED : s))
+    await startStop($, cfg, top, `manual (${describeWindow(top)})`)
+    const s = await read($, status)
+
+    return { text: `Clean stop: ${s.phase}${s.memoPath === null ? '' : `, memo ${s.memoPath}`}.` }
+  }
+  if (arg === 'resume') {
+    return { text: await resume($, cfg) }
+  }
+  if (arg === 'on') {
+    await update($, status, () => ARMED)
+
+    return { text: `Re-armed: the clean stop will start at ${thresholdsText(cfg)}.` }
+  }
+  if (arg === 'off') {
+    await update($, status, () => OFF)
+
+    return { text: `Off for this session. /${NAME} on to re-arm.` }
+  }
+
+  return { text: await statusText($, cfg) }
+}
+
 export const register: Register = (on, options) => {
   const cfg: Config = {
     sessionThreshold: Number(options.sessionThreshold ?? 90),
@@ -792,6 +825,12 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: NAME,
       description: 'Wind agents down cleanly before the session credit runs out',
+      argumentHint: '[status|stop|resume|on|off]',
+      immediate: true,
+    })
+    await $.command.register({
+      name: ALIAS,
+      description: `Short for /${NAME}`,
       argumentHint: '[status|stop|resume|on|off]',
       immediate: true,
     })
@@ -836,7 +875,7 @@ export const register: Register = (on, options) => {
       await startStop($, cfg, crossed, describeWindow(crossed))
     }
     if (top !== null && top.percentUsed >= 100) {
-      await update($, status, (s): CleanEndStatus =>
+      await update($, status, (s): GracefulStopStatus =>
         s.phase === 'stopping' ? { ...s, phase: 'overage', baselineUsd: e.cost?.usd ?? 0 } : s,
       )
     }
@@ -919,33 +958,9 @@ export const register: Register = (on, options) => {
     return (used ?? 0) >= cfg.graceCalls ? { deny: AGENT_CUTOFF } : next(e)
   })
 
-  on('command.run', { command: NAME }, async ($, e) => {
-    const arg = e.args.trim().toLowerCase() || 'status'
-
-    if (arg === 'stop') {
-      const top = peakOf((await $.session.usage()).rateLimits)
-      await update($, status, s => (s.phase === 'off' ? ARMED : s))
-      await startStop($, cfg, top, `manual (${describeWindow(top)})`)
-      const s = await read($, status)
-
-      return { text: `Clean stop: ${s.phase}${s.memoPath === null ? '' : `, memo ${s.memoPath}`}.` }
-    }
-    if (arg === 'resume') {
-      return { text: await resume($, cfg) }
-    }
-    if (arg === 'on') {
-      await update($, status, () => ARMED)
-
-      return { text: `Re-armed: the clean stop will start at ${thresholdsText(cfg)}.` }
-    }
-    if (arg === 'off') {
-      await update($, status, () => OFF)
-
-      return { text: `Off for this session. /${NAME} on to re-arm.` }
-    }
-
-    return { text: await statusText($, cfg) }
-  })
+  for (const command of COMMANDS) {
+    on('command.run', { command }, async ($, e) => runCommand($, cfg, e.args))
+  }
 
   // The mod's notes to the orchestrator and its agents: user-role rows.
   on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
@@ -975,16 +990,18 @@ export const register: Register = (on, options) => {
 
   // The command's output is the mod's card, with what the command did on top;
   // the model still reads the text.
-  on('ui.render', { component: 'CommandOutput', props: { command: NAME } }, async ($, e, next) => {
-    if (e.props.isErrored) return next(e)
-    const isStatus = ['', 'status'].includes(e.props.args.trim().toLowerCase())
+  for (const command of COMMANDS) {
+    on('ui.render', { component: 'CommandOutput', props: { command } }, async ($, e, next) => {
+      if (e.props.isErrored) return next(e)
+      const isStatus = ['', 'status'].includes(e.props.args.trim().toLowerCase())
 
-    return drawPanel($, cfg, e, {
-      columns: (e.viewport?.columns ?? 100) - 2,
-      isWorking: isMainBusy,
-      notice: isStatus ? null : modBody(e.props.text),
+      return drawPanel($, cfg, e, {
+        columns: (e.viewport?.columns ?? 100) - 2,
+        isWorking: isMainBusy,
+        notice: isStatus ? null : modBody(e.props.text),
+      })
     })
-  })
+  }
 
   // The same card above the prompt.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

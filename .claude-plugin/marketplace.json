@@ -1,15 +1,15 @@
 {
-  "name": "clean-end-of-session",
+  "name": "graceful-stop",
   "owner": {
     "name": "Renaud Couttet",
     "url": "https://github.com/Rctt27"
   },
   "metadata": {
-    "description": "Marketplace of the clean-end-of-session Claude Code mod."
+    "description": "Marketplace of the graceful-stop Claude Code mod."
   },
   "plugins": [
     {
-      "name": "clean-end-of-session",
+      "name": "graceful-stop",
       "source": "./",
       "description": "Winds agents down cleanly as the session's credit runs out and has the orchestrator write a resume memo.",
       "version": "0.4.0",

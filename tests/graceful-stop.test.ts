@@ -154,7 +154,7 @@ test('at the threshold agents and the orchestrator are warned and a memo is laid
   expect(w.notes.find(n => n.agentId === 'agent-1')?.text).toMatch(/status report/)
   expect(w.notes.find(n => n.agentId !== 'agent-1')?.text).toMatch(/resume memo/)
   const [path, memo] = [...w.files.entries()][0] ?? []
-  expect(path).toMatch(/CLEAN-END-OF-SESSION_.*\.md$/)
+  expect(path).toMatch(/GRACEFUL-STOP_.*\.md$/)
   expect(memo).toMatch(/Refactor billing/)
 })
 
@@ -220,10 +220,10 @@ test('the orchestrator memo is never overwritten by the fallback', async ($, on)
   expect(w.files.get(path ?? '')).toBe('# Real memo')
 })
 
-const command = async ($: Engine, args: string) =>
+const command = async ($: Engine, args: string, name = 'graceful-stop') =>
   (
     await $.command.run({
-      command: 'clean-end-of-session',
+      command: name,
       args,
       origin: { kind: 'composer' },
       presentation: { isFullscreen: false, columns: 120 },
@@ -328,7 +328,7 @@ test('the memo goes to the root of the repository the session works in', async (
   await $.session.measure(measure(90, 10))
 
   const [path] = [...w.files.keys()]
-  expect(path).toMatch(/proj[\\/]CLEAN-END-OF-SESSION_/)
+  expect(path).toMatch(/proj[\\/]GRACEFUL-STOP_/)
 })
 
 test('outside a repository the memo goes to the session root', async ($, on) => {
@@ -336,7 +336,7 @@ test('outside a repository the memo goes to the session root', async ($, on) => 
   await $.session.measure(measure(90, 10))
 
   const [path] = [...w.files.keys()]
-  expect(path).toMatch(/notes[\\/]CLEAN-END-OF-SESSION_/)
+  expect(path).toMatch(/notes[\\/]GRACEFUL-STOP_/)
 })
 
 const both = (session: number, weekly: number) => ({
@@ -376,10 +376,10 @@ test('the thresholds follow the configuration', { options: { sessionThreshold: 8
 })
 
 const describeRow = (field: string, label: string) => ({
-  key: `clean-end-of-session.${field}`,
+  key: `graceful-stop.${field}`,
   label,
   isHidden: false,
-  provider: { plugin: 'clean-end-of-session', tier: 'user' as const },
+  provider: { plugin: 'graceful-stop', tier: 'user' as const },
 })
 
 function menu(on: On) {
@@ -389,23 +389,23 @@ function menu(on: On) {
 
 test('the settings fold under a closed chevron by default', async ($, on) => {
   menu(on)
-  const toggle = await $.config.describe(describeRow('showSettings', 'clean-end-of-session'))
-  const threshold = await $.config.describe(describeRow('sessionThreshold', 'clean-end-of-session · Session trigger threshold (%)'))
+  const toggle = await $.config.describe(describeRow('showSettings', 'graceful-stop'))
+  const threshold = await $.config.describe(describeRow('sessionThreshold', 'graceful-stop · Session trigger threshold (%)'))
   const other = await $.config.describe({ ...describeRow('x', 'Theme'), key: 'theme' })
 
-  expect(toggle.label).toBe('▸ clean-end-of-session')
+  expect(toggle.label).toBe('▸ graceful-stop')
   expect(threshold.isHidden).toBe(true)
   expect(other.isHidden).toBe(false)
 })
 
 test('an open chevron shows every setting, each led by the mod name', { options: { showSettings: true } }, async ($, on) => {
   menu(on)
-  const toggle = await $.config.describe(describeRow('showSettings', 'clean-end-of-session'))
-  const threshold = await $.config.describe(describeRow('sessionThreshold', 'clean-end-of-session · Session trigger threshold (%)'))
+  const toggle = await $.config.describe(describeRow('showSettings', 'graceful-stop'))
+  const threshold = await $.config.describe(describeRow('sessionThreshold', 'graceful-stop · Session trigger threshold (%)'))
 
-  expect(toggle.label).toBe('▾ clean-end-of-session')
+  expect(toggle.label).toBe('▾ graceful-stop')
   expect(threshold.isHidden).toBe(false)
-  expect(threshold.label).toMatch(/^clean-end-of-session · /)
+  expect(threshold.label).toMatch(/^graceful-stop · /)
 })
 
 const BACK = /(today|tomorrow) \d\d:\d\d \(in 2 h 13\)/
@@ -426,7 +426,7 @@ test('the brake and the status say when the credit is back', async ($, on) => {
   const w = world(on, agents)
   await stopCleanly($, w, agents)
 
-  expect(await step($)).toMatch(new RegExp(`Credit back ${BACK.source}: /clean-end-of-session resume`))
+  expect(await step($)).toMatch(new RegExp(`Credit back ${BACK.source}: /graceful-stop resume`))
   expect(await command($, 'status')).toMatch(new RegExp(`Credit back: ${BACK.source}`))
 })
 
@@ -452,9 +452,9 @@ test('once the window reset, resume re-arms and relaunches the work from the mem
   const said = await command($, 'resume')
   await w.clock.advance(1)
 
-  expect(said).toMatch(/^Re-armed .* Resuming from .*CLEAN-END-OF-SESSION_.*\.md\.$/)
+  expect(said).toMatch(/^Re-armed .* Resuming from .*GRACEFUL-STOP_.*\.md\.$/)
   expect(w.prompts.length).toBe(1)
-  expect(w.prompts[0]).toMatch(/^\[clean-end-of-session\] The credit is back/)
+  expect(w.prompts[0]).toMatch(/^\[graceful-stop\] The credit is back/)
   expect(norm(w.prompts[0] ?? '')).toContain(memo)
   expect(await step($)).toBe('ok')
 })
@@ -474,7 +474,7 @@ test('the weekly window holds the resume after the session window reset', async 
 })
 
 test('a fresh session resumes from the credit and memo kept by the last one', async ($, on) => {
-  const kept = '/proj/CLEAN-END-OF-SESSION_2026-10-06_15h40.md'
+  const kept = '/proj/GRACEFUL-STOP_2026-10-06_15h40.md'
   const w = world(on, [], {
     limits: [],
     store: {
@@ -494,18 +494,25 @@ test('a fresh session resumes from the credit and memo kept by the last one', as
 
 test('without a kept memo, resume takes the newest at the repository root', async ($, on) => {
   const w = world(on, [], { limits: [{ kind: 'five_hour', percentUsed: 20, resetsAt: RESETS_AT }] })
-  w.files.set('/proj/CLEAN-END-OF-SESSION_2026-10-01_09h00.md', '# Older')
-  w.files.set('/proj/CLEAN-END-OF-SESSION_2026-10-05_21h30.md', '# Newer')
+  w.files.set('/proj/GRACEFUL-STOP_2026-10-01_09h00.md', '# Older')
+  w.files.set('/proj/GRACEFUL-STOP_2026-10-05_21h30.md', '# Newer')
   w.files.set('/proj/README.md', '# Readme')
 
   expect(await command($, 'resume')).toMatch(/2026-10-05_21h30\.md\.$/)
+})
+
+test('a memo written under the old name is still resumed from', async ($, on) => {
+  const w = world(on, [], { limits: [{ kind: 'five_hour', percentUsed: 20, resetsAt: RESETS_AT }] })
+  w.files.set('/proj/CLEAN-END-OF-SESSION_2026-10-05_21h30.md', '# Old memo')
+
+  expect(await command($, 'resume')).toMatch(/CLEAN-END-OF-SESSION_2026-10-05_21h30\.md\.$/)
 })
 
 test('with no memo at all, resume says so and changes nothing', async ($, on) => {
   const w = world(on, [], { limits: [{ kind: 'five_hour', percentUsed: 20, resetsAt: RESETS_AT }] })
   await command($, 'off')
 
-  expect(await command($, 'resume')).toMatch(/^No resume memo found in .*proj\. \/clean-end-of-session on re-arms/)
+  expect(await command($, 'resume')).toMatch(/^No resume memo found in .*proj\. \/graceful-stop on re-arms/)
   await w.clock.advance(1)
   expect(w.prompts).toEqual([])
   expect(await command($, 'status')).toMatch(/^Phase: off/)
@@ -525,7 +532,7 @@ test('the end of the stop says to resume once the credit is back', async ($, on)
   await stopCleanly($, w, agents)
 
   expect(w.toasts.at(-1)).toMatch(
-    new RegExp(`clean stop complete\\. Credit back ${BACK.source}: /clean-end-of-session resume then picks the work up\\.$`),
+    new RegExp(`clean stop complete\\. Credit back ${BACK.source}: /graceful-stop resume then picks the work up\\.$`),
   )
 })
 
@@ -533,7 +540,7 @@ test('a stop with nothing running says to resume too', async ($, on) => {
   const w = world(on, [])
   await $.session.measure(measure(90, 10))
 
-  expect(w.toasts.at(-1)).toMatch(/nothing running\. No more requests will leave\. Credit back .*\/clean-end-of-session resume/)
+  expect(w.toasts.at(-1)).toMatch(/nothing running\. No more requests will leave\. Credit back .*\/graceful-stop resume/)
 })
 
 // The band above the prompt.
@@ -542,7 +549,7 @@ const SURFACES = ['terminal', 'desktop'] as const
 
 const band = ($: Engine, surface: (typeof SURFACES)[number], isWorking = false) =>
   $.ui.mount({
-    plugin: 'clean-end-of-session',
+    plugin: 'graceful-stop',
     surface,
     component: 'AbovePrompt',
     props: { hasSurvey: false, isWorking, maxRows: 12, bodyColumns: 100, scroll: { offset: 0, bodyRows: 12 }, view: {} },
@@ -668,10 +675,10 @@ test('not armed at start, a session starts off and a reload keeps what the perso
 
 const output = ($: Engine, surface: (typeof SURFACES)[number], args: string, text: string) =>
   $.ui.mount({
-    plugin: 'clean-end-of-session',
+    plugin: 'graceful-stop',
     surface,
     component: 'CommandOutput',
-    props: { command: 'clean-end-of-session', args, text: `clean-end-of-session: ${text}`, isErrored: false },
+    props: { command: 'graceful-stop', args, text: `graceful-stop: ${text}`, isErrored: false },
     viewport: { columns: 120, rows: 40 },
   })
 
@@ -694,5 +701,22 @@ test('another command draws the card with what it did on top', async ($, on) => 
   await command($, 'off')
   const ui = await output($, 'terminal', 'on', await command($, 'on'))
   expect(await ui.find({ type: 'Text', text: /^› Re-armed: the clean stop will start at session 90%, weekly 95%\.$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: ' ● ARMED ' })).toBeDefined()
+})
+
+test('/gs is the same command, its output the same card', async ($, on) => {
+  world(on, [AGENT])
+  await $.session.measure(both(52, 31))
+  expect(await command($, 'off', 'gs')).toMatch(/^Off for this session/)
+  expect(await command($, '', 'gs')).toMatch(/^Phase: off/)
+
+  const ui = await $.ui.mount({
+    plugin: 'graceful-stop',
+    surface: 'terminal',
+    component: 'CommandOutput',
+    props: { command: 'gs', args: 'on', text: `gs: ${await command($, 'on', 'gs')}`, isErrored: false },
+    viewport: { columns: 120, rows: 40 },
+  })
+  expect(await ui.find({ type: 'Text', text: /^› Re-armed/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: ' ● ARMED ' })).toBeDefined()
 })
