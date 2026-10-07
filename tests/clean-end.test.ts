@@ -535,3 +535,164 @@ test('a stop with nothing running says to resume too', async ($, on) => {
 
   expect(w.toasts.at(-1)).toMatch(/nothing running\. No more requests will leave\. Credit back .*\/clean-end-of-session resume/)
 })
+
+// The band above the prompt.
+
+const SURFACES = ['terminal', 'desktop'] as const
+
+const band = ($: Engine, surface: (typeof SURFACES)[number], isWorking = false) =>
+  $.ui.mount({
+    plugin: 'clean-end-of-session',
+    surface,
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking, maxRows: 12, bodyColumns: 100, scroll: { offset: 0, bodyRows: 12 }, view: {} },
+  })
+
+test('the band shows the state and a gauge per window, moving as the credit does', async ($, on) => {
+  world(on, [AGENT])
+  await $.session.measure(both(52, 31))
+  for (const surface of SURFACES) {
+    const ui = await band($, surface)
+    expect(await ui.find({ type: 'Text', text: ' ● ARMED ' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'clean stop at 90 % (5 h) · 95 % (7 d) · overage budget $2.00 · 5 grace calls' })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /^ +52 %$/ }))?.props.color).toBe('#22c55e')
+    expect(await ui.find({ type: 'Text', text: /^ {3}↻ (today|tomorrow) \d\d:\d\d · in 2 h 13$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ +31 %$/ })).toBeDefined()
+    // The terminal paints the gauge cell by cell; the desktop draws it as text.
+    if (surface === 'terminal') expect(await ui.findAll({ type: 'Raster' })).toHaveLength(2)
+    else expect(await ui.find({ type: 'Text', text: /▏/ })).toBeDefined()
+    await ui.unmount()
+  }
+
+  const ui = await band($, 'terminal')
+  await $.session.measure(both(75, 31))
+  expect((await ui.find({ type: 'Text', text: /^ +75 %$/ }))?.props.color).toBe('#f59e0b')
+  await ui.unmount()
+})
+
+test('the band Off button turns the mod off, then On re-arms it', async ($, on) => {
+  world(on, [AGENT])
+  const ui = await band($, 'terminal')
+  expect((await ui.find({ key: 'toggle' }))?.text).toBe('Off')
+
+  await ui.press({ key: 'toggle' })
+  expect(await command($, 'status')).toMatch(/^Phase: off/)
+  expect((await ui.find({ key: 'toggle' }))?.text).toBe('On')
+  expect(await ui.find({ type: 'Text', text: ' ● OFF ' })).toBeDefined()
+
+  await ui.press({ key: 'toggle' })
+  expect(await command($, 'status')).toMatch(/^Phase: armed/)
+})
+
+test('the band Resume button is dimmed until the credit is back, then resumes', async ($, on) => {
+  const agents = [AGENT]
+  const w = world(on, agents)
+  await stopCleanly($, w, agents)
+  const ui = await band($, 'terminal')
+  expect((await ui.find({ key: 'resume' }))?.props.dimColor).toBe(true)
+  expect(await ui.find({ type: 'Text', text: new RegExp(`^stopped cleanly · credit back ${BACK.source}$`) })).toBeDefined()
+
+  await ui.press({ key: 'resume' })
+  expect(w.toasts.at(-1)).toMatch(/not been reset yet/)
+  expect(w.prompts).toEqual([])
+  await ui.unmount()
+
+  await w.clock.set(Date.parse(RESETS_AT) + 60_000)
+  const later = await band($, 'terminal')
+  expect((await later.find({ key: 'resume' }))?.props.variant).toBe('primary')
+  await later.press({ key: 'resume' })
+  await w.clock.advance(1)
+  expect(w.toasts.at(-1)).toMatch(/Resuming from/)
+  expect(w.prompts[0]).toMatch(/The credit is back/)
+})
+
+test('the band Resume button waits while Claude is working', async ($, on) => {
+  const w = world(on, [], { limits: [{ kind: 'five_hour', percentUsed: 20, resetsAt: RESETS_AT }] })
+  const ui = await band($, 'terminal', true)
+  expect((await ui.find({ key: 'resume' }))?.props.dimColor).toBe(true)
+
+  await ui.press({ key: 'resume' })
+  expect(w.toasts.at(-1)).toMatch(/Claude is working/)
+})
+
+test('before its first answer the band says there is no reading yet', async ($, on) => {
+  world(on, [], { limits: [] })
+  const ui = await band($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /No credit reading yet/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a fresh session draws the reading kept by the last one, said to be old', async ($, on) => {
+  world(on, [], {
+    limits: [],
+    store: {
+      credit: [{ kind: 'five_hour', percentUsed: 64, resetsAt: RESETS_AT }],
+      creditAt: NOW - 30 * 60_000,
+    },
+  })
+  const ui = await band($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /^ +64 %$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Last reading at (today|yesterday|\w+ \d+ \w+) \d\d:\d\d: it refreshes/ })).toBeDefined()
+})
+
+const start = {
+  cwd: '/proj',
+  surface: 'terminal' as const,
+  isInteractive: true,
+}
+
+function host(on: On) {
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('ui.invalidate', () => ({ value: undefined }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+}
+
+test('a new session starts armed by default', async ($, on) => {
+  world(on, [])
+  host(on)
+  await $.session.start(start)
+
+  expect(await command($, 'status')).toMatch(/^Phase: armed/)
+})
+
+test('not armed at start, a session starts off and a reload keeps what the person chose', { options: { armAtStart: false } }, async ($, on) => {
+  world(on, [])
+  host(on)
+  await $.session.start(start)
+  expect(await command($, 'status')).toMatch(/^Phase: off/)
+
+  await command($, 'on')
+  await $.session.start(start)
+  expect(await command($, 'status')).toMatch(/^Phase: armed/)
+})
+
+const output = ($: Engine, surface: (typeof SURFACES)[number], args: string, text: string) =>
+  $.ui.mount({
+    plugin: 'clean-end-of-session',
+    surface,
+    component: 'CommandOutput',
+    props: { command: 'clean-end-of-session', args, text: `clean-end-of-session: ${text}`, isErrored: false },
+    viewport: { columns: 120, rows: 40 },
+  })
+
+test('the status command draws the card, with the overage budget and the grace calls', async ($, on) => {
+  world(on, [AGENT])
+  await $.session.measure(both(52, 31))
+  for (const surface of SURFACES) {
+    const ui = await output($, surface, '', await command($, 'status'))
+    expect(await ui.find({ type: 'Text', text: ' ● ARMED ' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ +52 %$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /· overage budget \$2\.00 · 5 grace calls$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Phase:/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^› / })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('another command draws the card with what it did on top', async ($, on) => {
+  world(on, [AGENT])
+  await command($, 'off')
+  const ui = await output($, 'terminal', 'on', await command($, 'on'))
+  expect(await ui.find({ type: 'Text', text: /^› Re-armed: the clean stop will start at session 90%, weekly 95%\.$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: ' ● ARMED ' })).toBeDefined()
+})

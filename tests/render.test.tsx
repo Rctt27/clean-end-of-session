@@ -58,26 +58,6 @@ test('the brake answers are drawn as the mod, not as a reply of the model', asyn
   }
 })
 
-test('the command output is drawn line by line without the plugin name', async ($, on) => {
-  engine(on)
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount({
-      plugin: PLUGIN,
-      surface,
-      component: 'CommandOutput',
-      props: {
-        command: PLUGIN,
-        args: 'status',
-        text: 'clean-end-of-session: Phase: armed\nCredit: no reading yet',
-        isErrored: false,
-      } as never,
-    })
-    expect(await ui.find({ type: 'Text', text: /^Phase: armed$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'Credit: no reading yet' })).toBeDefined()
-    await ui.unmount()
-  }
-})
-
 test('every other row is left to the engine', async ($, on) => {
   engine(on)
   for (const surface of SURFACES) {

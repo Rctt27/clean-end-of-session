@@ -1,6 +1,6 @@
 {
   "name": "clean-end-of-session",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Winds agents down cleanly as the session's credit runs out and has the orchestrator write a resume memo.",
   "author": {
     "name": "Renaud Couttet",
@@ -23,6 +23,12 @@
       "title": "clean-end-of-session",
       "description": "Shows or hides the clean-end-of-session settings below.",
       "default": false
+    },
+    "armAtStart": {
+      "type": "boolean",
+      "title": "clean-end-of-session · Arm at session start",
+      "description": "Arms the clean stop in every new session. Off, each session starts off and the panel's On button arms it.",
+      "default": true
     },
     "sessionThreshold": {
       "type": "number",

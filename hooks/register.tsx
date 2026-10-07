@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentInfo, EngineInterface, Register, SessionRateLimit } from 'claude-code'
+import type { AgentInfo, EngineInterface, Register, ResolveInput, SessionRateLimit } from 'claude-code'
 
-import type { CleanEndAgent, CleanEndStatus } from '../types'
+import type { CleanEndAgent, CleanEndCredit, CleanEndStatus } from '../types'
 
 const NAME = 'clean-end-of-session'
 const TAG = `[${NAME}]`
@@ -17,6 +17,7 @@ const TOGGLE_KEY = `${NAME}.showSettings`
 // `$.store` keys, kept between sessions: the last credit reading and the last
 // memo, so a fresh session can still tell when to resume and from what.
 const CREDIT_KEY = 'credit'
+const CREDIT_AT_KEY = 'creditAt'
 const MEMO_KEY = 'memoPath'
 const MEMO_FILE = /^CLEAN-END-OF-SESSION_.*\.md$/
 
@@ -32,7 +33,12 @@ const ARMED: CleanEndStatus = {
   idleTurns: 0,
 }
 
+const OFF: CleanEndStatus = { ...ARMED, phase: 'off' }
+
 const status = atom({ plugin: 'clean-end-of-session', key: 'status' } as const, ARMED)
+const credit = atom({ plugin: 'clean-end-of-session', key: 'credit' } as const, null)
+const minute = atom({ plugin: 'clean-end-of-session', key: 'minute' } as const, 0)
+const started = atom({ plugin: 'clean-end-of-session', key: 'started' } as const, false)
 
 type Engine = EngineInterface
 type Config = {
@@ -42,6 +48,8 @@ type Config = {
   weeklyThreshold: number
   budgetUsd: number
   graceCalls: number
+  /** Whether a new session starts armed, else off until the person arms it. */
+  armAtStart: boolean
 }
 
 // Whether the main loop is in a turn; a reload forgets it, which only means
@@ -117,13 +125,16 @@ const remainingOf = (ms: number) => {
   return `in ${Math.floor(minutes / 1440)} d ${Math.floor((minutes % 1440) / 60)} h`
 }
 
-// A reset time in the person's local time: `today 18:40 (in 2 h 13)`.
-const whenText = (at: number, now: number) => {
-  if (Number.isNaN(at)) return 'at an unknown time'
+// A time in the person's local time: `today 18:40`.
+const clockOf = (at: number, now: number) => {
   const date = new Date(at)
 
-  return `${dayOf(date, new Date(now))} ${pad(date.getHours())}:${pad(date.getMinutes())} (${remainingOf(at - now)})`
+  return `${dayOf(date, new Date(now))} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
+
+// A reset time in the person's local time: `today 18:40 (in 2 h 13)`.
+const whenText = (at: number, now: number) =>
+  Number.isNaN(at) ? 'at an unknown time' : `${clockOf(at, now)} (${remainingOf(at - now)})`
 
 const stamp = (ms: number) =>
   new Date(ms).toISOString().slice(0, 16).replace('T', '_').replace(':', 'h')
@@ -174,6 +185,8 @@ const AGENT_CUTOFF =
 // this label, so it never reads as the agent's own work.
 const MOD_COLOR = 'yellow'
 const MOD_LABEL = `⏹ ${NAME}`
+// The panel's frame: a neutral gray that reads on dark and light themes.
+const CARD_BORDER = '#71717a'
 
 const isModText = (text: string) => text.trimStart().startsWith(TAG)
 
@@ -485,12 +498,293 @@ async function statusText($: Engine, cfg: Config) {
   return lines.filter(l => l !== null).join('\n')
 }
 
+// The band above the prompt: a card with a status badge and the buttons, then
+// one gauge per credit window.
+
+const WINDOW_NAMES: Record<string, string> = { five_hour: 'Session 5 h', seven_day: 'Week 7 d', spend_limit: 'Spend' }
+const windowName = (kind: string) => WINDOW_NAMES[kind] ?? kind
+const windowRank = (kind: string) => {
+  const rank = Object.keys(WINDOW_NAMES).indexOf(kind)
+
+  return rank < 0 ? Number.MAX_SAFE_INTEGER : rank
+}
+
+// Cells around the gauge: the window's name, then `  100 %`; the card's
+// border and padding take 4 more.
+const NAME_CELLS = 13
+const PERCENT_CELLS = 7
+const CARD_CELLS = 4
+const GAUGE_MAX = 48
+const GAUGE_MIN = 12
+
+// Colors as 0xRRGGBB: the gauge fades from green to amber to red as it nears
+// the window's threshold, over a dark track.
+const GREEN = 0x22c55e
+const AMBER = 0xf59e0b
+const RED = 0xef4444
+const TRACK = 0x3a3a3a
+const MARK = 0xd4d4d4
+const hex = (rgb: number) => `#${rgb.toString(16).padStart(6, '0')}`
+
+const mix = (from: number, to: number, t: number) => {
+  const at = Math.min(1, Math.max(0, t))
+  const channel = (shift: number) => {
+    const a = (from >> shift) & 0xff
+    const b = (to >> shift) & 0xff
+
+    return Math.round(a + (b - a) * at) << shift
+  }
+
+  return channel(16) | channel(8) | channel(0)
+}
+
+// The gauge's color at `percent`: green well below the threshold, amber 15
+// points before it, red at it.
+const gradientAt = (percent: number, threshold: number) => {
+  const greenUntil = threshold - 35
+  const amberAt = threshold - 15
+  if (percent <= greenUntil) return GREEN
+  if (percent <= amberAt) return mix(GREEN, AMBER, (percent - greenUntil) / (amberAt - greenUntil))
+
+  return mix(AMBER, RED, (percent - amberAt) / (threshold - amberAt))
+}
+
+// Left-aligned blocks, one to seven eighths of a cell.
+const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
+
+type Cell = { glyph: string; fg: number; bg: number }
+
+// The gauge's cells, filled to the eighth of a cell; an empty cell is a block
+// in the track's color, and the threshold a thin mark on the track.
+const gaugeCells = (percent: number, threshold: number, width: number): Cell[] => {
+  const eighths = Math.round((Math.min(100, Math.max(0, percent)) / 100) * width * 8)
+  const mark = Math.min(width - 1, Math.round((threshold / 100) * width))
+
+  return Array.from({ length: width }, (_, i) => {
+    const fill = eighths - i * 8
+    const color = gradientAt(((i + 0.5) / width) * 100, threshold)
+    if (fill >= 8) return { glyph: '█', fg: color, bg: TRACK }
+    if (fill > 0) return { glyph: EIGHTHS[fill] ?? '▏', fg: color, bg: TRACK }
+    if (i === mark) return { glyph: '▏', fg: MARK, bg: TRACK }
+
+    return { glyph: '█', fg: TRACK, bg: TRACK }
+  })
+}
+
+const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+const toBase64 = (bytes: Uint8Array) => {
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = ((bytes[i] ?? 0) << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0)
+    out += (BASE64[(n >> 18) & 63] ?? '') + (BASE64[(n >> 12) & 63] ?? '')
+    out += i + 1 < bytes.length ? (BASE64[(n >> 6) & 63] ?? '') : '='
+    out += i + 2 < bytes.length ? (BASE64[n & 63] ?? '') : '='
+  }
+
+  return out
+}
+
+// A Raster's cells: little-endian u32 triplets [code point, foreground, background].
+const rasterCells = (cells: readonly Cell[]) => {
+  const words = new Uint32Array(cells.length * 3)
+  cells.forEach((c, i) => words.set([c.glyph.codePointAt(0) ?? 0x20, c.fg, c.bg], i * 3))
+
+  return toBase64(new Uint8Array(words.buffer))
+}
+
+type Run = { text: string; fg: number; bg: number }
+
+// The same cells as text runs, for a surface without Raster.
+const textRuns = (cells: readonly Cell[]) =>
+  cells.reduce<Run[]>((runs, c) => {
+    const last = runs[runs.length - 1]
+    if (last !== undefined && last.fg === c.fg && last.bg === c.bg) last.text += c.glyph
+    else runs.push({ text: c.glyph, fg: c.fg, bg: c.bg })
+
+    return runs
+  }, [])
+
+type Gauge = { name: string; cells: Cell[]; color: string; percent: string; tail: string }
+
+// Each window as a gauge sized to the card; a reading whose reset time has
+// passed is drawn empty, as the next answer will read it.
+const gaugesOf = (cfg: Config, windows: readonly SessionRateLimit[], columns: number, now: number): Gauge[] =>
+  [...windows]
+    .sort((a, b) => windowRank(a.kind) - windowRank(b.kind))
+    .map(w => {
+      const threshold = thresholdOf(cfg, w.kind)
+      const resetsAt = w.resetsAt === undefined ? NaN : Date.parse(w.resetsAt)
+      const isReset = resetsAt <= now
+      const percent = isReset ? 0 : w.percentUsed
+      const said = isReset
+        ? `↻ reset since ${clockOf(resetsAt, now)}`
+        : Number.isNaN(resetsAt) ? '' : `↻ ${clockOf(resetsAt, now)} · ${remainingOf(resetsAt - now)}`
+      const room = columns - CARD_CELLS - NAME_CELLS - PERCENT_CELLS
+      const tail = said === '' || Math.min(GAUGE_MAX, room - said.length - 3) < GAUGE_MIN ? '' : `   ${said}`
+      const width = Math.max(1, Math.min(GAUGE_MAX, room - tail.length))
+
+      return {
+        name: windowName(w.kind).padEnd(NAME_CELLS),
+        cells: gaugeCells(percent, threshold, width),
+        color: hex(gradientAt(percent, threshold)),
+        percent: `${String(Math.round(percent)).padStart(5)} %`,
+        tail,
+      }
+    })
+
+// This session's reading, else the last one kept, which the band says is old.
+async function readCredit($: Engine): Promise<{ reading: CleanEndCredit | null; isKept: boolean }> {
+  const live = await read($, credit)
+  if (live !== null) return { reading: live, isKept: false }
+  const windows = await $.store.get(CREDIT_KEY).catch(() => undefined)
+  const at = await $.store.get(CREDIT_AT_KEY).catch(() => undefined)
+  if (!Array.isArray(windows) || windows.length === 0) return { reading: null, isKept: false }
+
+  return { reading: { windows: windows as SessionRateLimit[], at: typeof at === 'number' ? at : NaN }, isKept: true }
+}
+
+// The status badge: its word and colors, by phase.
+const BADGES: Record<CleanEndStatus['phase'], { word: string; fg: string; bg: string }> = {
+  armed: { word: 'ARMED', fg: '#86efac', bg: '#14532d' },
+  off: { word: 'OFF', fg: '#d4d4d8', bg: '#3f3f46' },
+  stopping: { word: 'STOPPING', fg: '#fcd34d', bg: '#78350f' },
+  overage: { word: 'OVERAGE', fg: '#fdba74', bg: '#7c2d12' },
+  stopped: { word: 'STOPPED', fg: '#fca5a5', bg: '#7f1d1d' },
+  braked: { word: 'BRAKED', fg: '#fca5a5', bg: '#7f1d1d' },
+}
+
+// The settings, beside the badge while the mod is armed.
+const settingsText = (cfg: Config) =>
+  `clean stop at ${cfg.sessionThreshold} % (5 h) · ${cfg.weeklyThreshold} % (7 d) · ` +
+  `overage budget ${usd(cfg.budgetUsd)} · ${cfg.graceCalls} grace calls`
+
+const phaseDetail = (cfg: Config, s: CleanEndStatus, back: string | null) => {
+  const whenBack = back === null ? 'credit is back' : `credit back ${back}`
+  switch (s.phase) {
+    case 'armed':
+      return settingsText(cfg)
+    case 'off':
+      return 'off for this session'
+    case 'stopping':
+      return `clean stop under way (${s.trigger}) · ${Object.keys(s.warned).length} agent(s) warned`
+    case 'overage':
+      return `clean stop in overage · ${usd(s.spentUsd)} of ${usd(cfg.budgetUsd)}`
+    case 'braked':
+      return `overage budget used up · ${whenBack}`
+    case 'stopped':
+      return `stopped cleanly · ${whenBack}`
+  }
+}
+
+async function tick($: Engine) {
+  const now = Math.floor((await $.clock.now()) / 60_000)
+  await update($, minute, () => now)
+}
+
+// The band's Off / On button: the same as `/clean-end-of-session off|on`.
+async function toggle($: Engine) {
+  await update($, status, s => (s.phase === 'off' ? ARMED : OFF))
+}
+
+// The band's Resume button: the command's resume, said in a toast.
+async function pressResume($: Engine, cfg: Config, isWorking: boolean) {
+  const said = isWorking ? 'Claude is working: resume once the turn has ended.' : await resume($, cfg)
+  $.ui.toast(`${NAME}: ${said}`)
+}
+
+type PanelOptions = {
+  /** Cells the card may take. */
+  columns: number
+  /** Whether a model turn is running: Resume waits for it. */
+  isWorking: boolean
+  /** What a command just did, shown under the header; null for the panel. */
+  notice: string | null
+}
+
+// The mod's card, drawn above the prompt and as its command's output: its
+// state, a gauge per credit window, its settings, Off / On and Resume.
+async function drawPanel($: Engine, cfg: Config, e: ResolveInput, o: PanelOptions) {
+  const s = await read($, status)
+  await read($, minute)
+  const { reading, isKept } = await readCredit($)
+  const now = await $.clock.now()
+  const back = await creditBack($, cfg)
+  const canResume = !isWatching(s) && !o.isWorking && back === null
+  const gauges = gaugesOf(cfg, reading?.windows ?? [], o.columns, now)
+  const badge = BADGES[s.phase]
+
+  const ui = $.ui.resolve(e)
+  const { Box, Button, Text } = ui
+  // Raster paints each cell's colors: the terminal's alone (another surface's
+  // table may hold it as a fragment that draws nothing).
+  const Raster = e.surface === 'terminal' && 'Raster' in ui ? ui.Raster : null
+
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={CARD_BORDER} paddingX={1}>
+      <Box flexDirection="row" justifyContent="space-between" gap={2}>
+        <Box flexDirection="row" flexShrink={1} gap={1}>
+          <Text color={MOD_COLOR} bold>{MOD_LABEL}</Text>
+          <Text color={badge.fg} backgroundColor={badge.bg} bold>{` ● ${badge.word} `}</Text>
+          <Text dimColor wrap="truncate">{phaseDetail(cfg, s, isHalted(s) ? back : null)}</Text>
+        </Box>
+        <Box flexDirection="row" flexShrink={0} gap={1}>
+          <Button key="toggle" hotkey="o" onPress={() => toggle($)}>
+            {s.phase === 'off' ? 'On' : 'Off'}
+          </Button>
+          <Button
+            key="resume"
+            hotkey="r"
+            variant={canResume ? 'primary' : 'secondary'}
+            dimColor={!canResume}
+            onPress={() => pressResume($, cfg, o.isWorking)}
+          >
+            Resume
+          </Button>
+        </Box>
+      </Box>
+      {o.notice !== null && (
+        <Text key="notice" wrap="wrap">{`› ${o.notice}`}</Text>
+      )}
+      <Box height={1} />
+      {gauges.map(g => (
+        <Box key={`gauge-${g.name.trim()}`} flexDirection="row">
+          <Text bold>{g.name}</Text>
+          {Raster !== null ? (
+            <Raster key={`bar-${g.name.trim()}`} columns={g.cells.length} rows={1} cells={rasterCells(g.cells)} />
+          ) : (
+            textRuns(g.cells).map((r, i) => (
+              <Text key={`run-${i}`} color={hex(r.fg)} backgroundColor={hex(r.bg)}>
+                {r.text}
+              </Text>
+            ))
+          )}
+          <Text color={g.color} bold>{g.percent}</Text>
+          <Text dimColor wrap="truncate">{g.tail}</Text>
+        </Box>
+      ))}
+      {reading === null && (
+        <Text dimColor wrap="truncate">No credit reading yet: it comes with the first answer.</Text>
+      )}
+      {isKept && reading !== null && (
+        <Text dimColor wrap="truncate">
+          {`Last reading ${Number.isNaN(reading.at) ? 'from an earlier session' : `at ${clockOf(reading.at, now)}`}: it refreshes with the first answer.`}
+        </Text>
+      )}
+      {s.memoPath !== null && s.phase !== 'armed' && s.phase !== 'off' && (
+        <Text dimColor wrap="truncate">{`Memo  ${s.memoPath}`}</Text>
+      )}
+    </Box>
+  )
+}
+
 export const register: Register = (on, options) => {
   const cfg: Config = {
     sessionThreshold: Number(options.sessionThreshold ?? 90),
     weeklyThreshold: Number(options.weeklyThreshold ?? 95),
     budgetUsd: Number(options.overageBudgetUsd ?? 2),
     graceCalls: Math.max(0, Math.floor(Number(options.graceToolCalls ?? 5))),
+    armAtStart: options.armAtStart !== false,
   }
   const isOpen = options.showSettings === true
 
@@ -503,6 +797,13 @@ export const register: Register = (on, options) => {
     })
     // A change of the toggle reloads the module: redraw the rows it folds.
     $.ui.invalidate('config.describe')
+    // A reload starts the session over for the module, not for the person.
+    if (!(await read($, started))) {
+      await update($, started, () => true)
+      if (!cfg.armAtStart) await update($, status, s => (s.phase === 'armed' ? OFF : s))
+    }
+    await tick($)
+    $.clock.every(60_000, () => void tick($))
 
     return next(e)
   })
@@ -525,7 +826,10 @@ export const register: Register = (on, options) => {
     const top = peakOf(e.rateLimits)
     const crossed = crossedWindow(cfg, e.rateLimits)
     if (e.changed.includes('rateLimits') && e.rateLimits.length > 0) {
+      const at = await $.clock.now()
+      await update($, credit, () => ({ windows: [...e.rateLimits], at }))
       await $.store.set(CREDIT_KEY, e.rateLimits).catch(() => undefined)
+      await $.store.set(CREDIT_AT_KEY, at).catch(() => undefined)
     }
 
     if (crossed !== null) {
@@ -635,7 +939,7 @@ export const register: Register = (on, options) => {
       return { text: `Re-armed: the clean stop will start at ${thresholdsText(cfg)}.` }
     }
     if (arg === 'off') {
-      await update($, status, () => ({ ...ARMED, phase: 'off' as const }))
+      await update($, status, () => OFF)
 
       return { text: `Off for this session. /${NAME} on to re-arm.` }
     }
@@ -669,50 +973,23 @@ export const register: Register = (on, options) => {
     )
   })
 
-  on('ui.render', { component: 'CommandOutput', props: { command: NAME } }, ($, e, next) => {
+  // The command's output is the mod's card, with what the command did on top;
+  // the model still reads the text.
+  on('ui.render', { component: 'CommandOutput', props: { command: NAME } }, async ($, e, next) => {
     if (e.props.isErrored) return next(e)
-    const { Box, Text } = $.ui.resolve(e)
+    const isStatus = ['', 'status'].includes(e.props.args.trim().toLowerCase())
 
-    return (
-      <Box flexDirection="column">
-        {modBody(e.props.text)
-          .split('\n')
-          .map((line, i) => (
-            <Text key={`line-${i}`} color={MOD_COLOR} wrap="wrap">
-              {line}
-            </Text>
-          ))}
-      </Box>
-    )
+    return drawPanel($, cfg, e, {
+      columns: (e.viewport?.columns ?? 100) - 2,
+      isWorking: isMainBusy,
+      notice: isStatus ? null : modBody(e.props.text),
+    })
   })
 
+  // The same card above the prompt.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const s = await read($, status)
-    if (e.props.hasSurvey || s.phase === 'armed' || s.phase === 'off') return next(e)
+    if (e.props.hasSurvey) return next(e)
 
-    const { Box, Text } = $.ui.resolve(e)
-    const back = isHalted(s) ? await creditBack($, cfg) : null
-    const resumeHint = back === null ? `/${NAME} resume` : `credit back ${back} · /${NAME} resume`
-    const label =
-      s.phase === 'stopping'
-        ? `Clean stop under way (${s.trigger}) · ${Object.keys(s.warned).length} agent(s) warned`
-        : s.phase === 'overage'
-          ? `Clean stop in overage: ${usd(s.spentUsd)} / ${usd(cfg.budgetUsd)}`
-          : s.phase === 'braked'
-            ? `Overage budget used up · ${resumeHint}`
-            : `Session stopped cleanly · ${resumeHint}`
-
-    return (
-      <Box flexDirection="column">
-        <Text color={MOD_COLOR} bold={isHalted(s)} wrap="truncate">
-          {`${NAME} · ${label}`}
-        </Text>
-        {s.memoPath !== null && (
-          <Text color={MOD_COLOR} dimColor wrap="truncate">
-            {`Memo: ${s.memoPath}`}
-          </Text>
-        )}
-      </Box>
-    )
+    return drawPanel($, cfg, e, { columns: e.props.bodyColumns, isWorking: e.props.isWorking, notice: null })
   })
 }

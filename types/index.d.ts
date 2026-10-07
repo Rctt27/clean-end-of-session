@@ -5,7 +5,7 @@
  * - `overage`: past 100 %, the clean stop goes on within the overage budget.
  * - `stopped`: the clean stop is over, no request leaves anymore.
  * - `braked`: the overage budget ran out, no request leaves anymore.
- * - `off`: the person turned the mod off for this session.
+ * - `off`: the mod is off for this session (turned off, or not armed at start).
  */
 export type CleanEndPhase = 'armed' | 'stopping' | 'overage' | 'stopped' | 'braked' | 'off'
 
@@ -40,8 +40,32 @@ export type CleanEndStatus = {
   idleTurns: number
 }
 
+/** A credit window as the engine reports it (SessionRateLimit). */
+export type CleanEndWindow = {
+  /** `five_hour`, `seven_day`, or a gateway's `spend_limit`. */
+  kind: string
+  percentUsed: number
+  /** When the window resets, ISO 8601. */
+  resetsAt?: string
+}
+
+/** The session's last credit reading, as the band draws it. */
+export type CleanEndCredit = {
+  windows: CleanEndWindow[]
+  /** When it was read, in ms since the epoch. */
+  at: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'clean-end-of-session': { status: CleanEndStatus }
+    'clean-end-of-session': {
+      status: CleanEndStatus
+      /** The last reading of this session; null before its first request. */
+      credit: CleanEndCredit | null
+      /** The current minute, ticked so the band's reset countdowns move. */
+      minute: number
+      /** Whether this session's start was seen: a reload must not disarm it again. */
+      started: boolean
+    }
   }
 }

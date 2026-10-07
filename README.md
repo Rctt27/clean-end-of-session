@@ -8,6 +8,27 @@ A Claude Code mod that winds your agents down **cleanly** before your subscripti
 
 When the session credit gets close to its limit, the mod stops new work. Every running subagent gets a few more tool calls to reach a consistent state, then must hand back a status report. The orchestrator turns these reports into a **resume memo** at the root of your repository. Once your credit is back, one command picks the work up from it.
 
+## The panel
+
+A panel above the prompt keeps the mod in view:
+
+```
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ⏹ clean-end-of-session  ● ARMED  clean stop at 90 % (5 h) · 95 % (7 d) · overage budget $2.00 · 5 grace calls   [ Off ] [ Resume ] │
+│                                                                                                                                    │
+│ Session 5 h  ████████████████████▋░░░░░░░░░░░░░░▏░░░░    52 %   ↻ today 18:40 · in 2 h 13                                          │
+│ Week 7 d     ████████████▍░░░░░░░░░░░░░░░░░░░░░░░░░▏░    31 %   ↻ Thu 9 Oct 10:00 · in 2 d 3 h                                     │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+- **The state of the mod**, as a colored badge: armed, stopping, overage, stopped (with the time your credit is back), braked, or off.
+- **A gauge per credit window**, 5 hours and 7 days, filled to the eighth of a character. Its color fades from green to amber 15 points before the window's threshold, then to red at it; the thin `▏` on the dark track is the threshold. It moves as the agent works, one point at a time, with each answer from the model. The terminal paints it cell by cell in true color; the desktop app draws the same gauge as colored text.
+- **Your settings**, beside the badge while the mod is armed: the two thresholds, the overage budget and the grace tool calls each subagent keeps.
+- **Off / On** turns the mod off for this session, or arms it again.
+- **Resume** relaunches the work from the resume memo. It is dimmed while it would be refused (a window still over its threshold, a clean stop under way, Claude at work); pressed anyway, it says why.
+
+Click a button in the fullscreen terminal or the desktop app. Elsewhere, `ctrl+x tab` moves the focus to the panel, then `o` presses Off / On and `r` Resume (or Tab and Enter); Esc returns to the prompt. `[-]` or `ctrl+x ctrl+a` folds the panel away, and unfolds it again: Claude Code remembers the fold, and a plugin cannot undo it.
+
 ## What happens
 
 | Phase | When | What the mod does |
@@ -15,11 +36,11 @@ When the session credit gets close to its limit, the mod stops new work. Every r
 | **armed** | Normal use | Watches the credit windows Claude Code reports. Nothing else. |
 | **stopping** | 5-hour session window ≥ **90%**, or 7-day window ≥ **95%** (or `/clean-end-of-session stop`) | Refuses new subagents. Warns every running subagent: finish or revert the current change within **5 tool calls**, then return a status report (done / half done with files / next step / watch-outs). After that, its tools are cut off. Tells the orchestrator to write the resume memo once the last report is in. |
 | **overage** | A window reaches 100% | Lets the clean stop finish on paid extra usage, up to an estimated **$2**, and nothing else. |
-| **stopped** / **braked** | The memo is written, or the overage budget is spent | No request leaves for the model anymore. A band above the prompt says so, with the time your credit is back: `today 18:40 (in 2 h 13)`. `/clean-end-of-session resume` then picks the work up. |
+| **stopped** / **braked** | The memo is written, or the overage budget is spent | No request leaves for the model anymore. The panel above the prompt says so, with the time your credit is back: `today 18:40 (in 2 h 13)`. Its **Resume** button, or `/clean-end-of-session resume`, then picks the work up. |
 
 The weekly threshold is higher than the session one on purpose: the last 10% of a week is about a whole 5-hour session.
 
-Everything the mod says in the conversation is drawn in **yellow** under a `⏹ clean-end-of-session` label: its notes to the orchestrator, the brake's answers (which look like a reply but come from no model), and its command output. You always tell the mod's actions apart from the agent's own work. This changes the drawing only, never what the model reads; press ctrl+o for the raw transcript.
+Everything the mod says in the conversation is drawn in **yellow** under a `⏹ clean-end-of-session` label: its notes to the orchestrator and the brake's answers (which look like a reply but come from no model). Its command answers with the card described under The panel, above. You always tell the mod's actions apart from the agent's own work. This changes the drawing only, never what the model reads; press ctrl+o for the raw transcript.
 
 ### The resume memo
 
@@ -53,6 +74,7 @@ Once unfolded, every setting starts with `clean-end-of-session ·`:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
+| Arm at session start | true | Every new session starts armed. Set to `false` to decide session by session: each one starts off, and the panel's **On** button arms it |
 | Session trigger threshold (%) | 90 | Use of the 5-hour window that starts the clean stop |
 | Weekly trigger threshold (%) | 95 | Use of the 7-day window that starts the clean stop |
 | Overage budget ($) | 2 | Estimated spend allowed past 100% to finish the stop |
@@ -96,6 +118,8 @@ claude --plugin-dir /path/to/clean-end-of-session
 | `/clean-end-of-session on` | Re-arms the mod without relaunching anything |
 | `/clean-end-of-session off` | Ignores the thresholds for this session |
 
+Each command answers with the same card as the panel, with what it just did on top (`/clean-end-of-session` alone shows the card). The card's **Resume** and **Off / On** buttons do the same as `resume`, `off` and `on`.
+
 The command runs at once, even while a turn is running.
 
 ## Limits worth knowing
@@ -103,6 +127,7 @@ The command runs at once, even while a turn is running.
 - **The overage budget is an estimate.** It is the session's cost at API prices since a window reached 100%, which is how extra usage is billed. It is not your invoice. Your real safety net is the monthly cap you set on claude.ai.
 - **The behaviour past 100% depends on Claude Code.** With extra usage on, Claude Code may continue on its own or ask you first. If it asks, the clean stop waits for your answer.
 - **The reset time comes from Claude Code.** Once the session is stopped, no request leaves, so the credit reading stays where it was; the mod trusts the reset time that came with it and counts a window as reset once that time has passed. Times are shown in your computer's local time.
+- **The gauges show the last reading Claude Code got.** A reading comes with each answer from the model, so usage from another terminal or from claude.ai shows up only at the next answer here. A new session draws the last reading kept by the previous one, and says how old it is, until its first answer.
 - **A tool already running is not interrupted.** The mod refuses the *next* tool call, so a long command runs to its end.
 - **Teammates running in their own terminal pane** are outside the mod's reach. Subagents started by the Agent tool are covered.
 - **Some details are internal to Claude Code.** Status reports are captured from the subagent hand-back tool (`SubagentHandback`). If it changes, the provisional memo loses the reports and the rest still works.
