@@ -637,10 +637,14 @@ const gaugesOf = (cfg: Config, windows: readonly SessionRateLimit[], columns: nu
       }
     })
 
-// This session's reading, else the last one kept, which the band says is old.
+// This session's reading: the one its last measure wrote, else the engine's
+// (a measure is raised only once a window moves a whole point), else the last
+// one kept, which the band says is old.
 async function readCredit($: Engine): Promise<{ reading: GracefulStopCredit | null; isKept: boolean }> {
-  const live = await read($, credit)
-  if (live !== null) return { reading: live, isKept: false }
+  const measured = await read($, credit)
+  if (measured !== null) return { reading: measured, isKept: false }
+  const live = (await $.session.usage()).rateLimits
+  if (live.length > 0) return { reading: { windows: [...live], at: await $.clock.now() }, isKept: false }
   const windows = await $.store.get(CREDIT_KEY).catch(() => undefined)
   const at = await $.store.get(CREDIT_AT_KEY).catch(() => undefined)
   if (!Array.isArray(windows) || windows.length === 0) return { reading: null, isKept: false }

@@ -629,6 +629,14 @@ test('before its first answer the band says there is no reading yet', async ($, 
   await ui.unmount()
 })
 
+test('before any change of the credit the band draws the reading Claude Code already has', async ($, on) => {
+  world(on, [], { limits: [{ kind: 'five_hour', percentUsed: 12, resetsAt: RESETS_AT }] })
+  const ui = await band($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /^ +12 %$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /No credit reading yet/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^Last reading/ })).toBeUndefined()
+})
+
 test('a fresh session draws the reading kept by the last one, said to be old', async ($, on) => {
   world(on, [], {
     limits: [],
