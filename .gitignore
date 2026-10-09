@@ -8,3 +8,6 @@ CLEAN-END-OF-SESSION_*.md
 node_modules/
 .idea/
 .DS_Store
+
+# Crash dumps from Git Bash tools.
+*.stackdump
