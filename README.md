@@ -95,6 +95,7 @@ Nothing leaves your machine: the mod makes no network calls.
 ## Support
 
 Bugs and questions: [GitHub issues](https://github.com/Rctt27/graceful-stop/issues).
+Security issues: report them privately from the repo's [Security tab](https://github.com/Rctt27/graceful-stop/security).
 
 ## Development
 
