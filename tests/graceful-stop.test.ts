@@ -51,7 +51,11 @@ function world(on: On, agents: AgentInfo[], where: Where = {}): World {
     clock: mock.clock(on, { now: NOW }),
   }
   mock.store(on, where.store)
-  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  on('session.measure', (_$, e) => {
+    if (where.limits === undefined && e.rateLimits.length > 0) w.limits = [...e.rateLimits]
+
+    return { changed: e.changed }
+  })
   on('ui.toast', (_$, e) => {
     w.toasts.push(e.text)
 
@@ -578,7 +582,10 @@ test('the band shows the state and a gauge per window, moving as the credit does
       const bars = await ui.findAll({ type: 'Raster' })
       expect(bars.map(b => b.props.columns)).toEqual([span, span])
     }
-    else expect(await ui.find({ type: 'Text', text: /▏/ })).toBeDefined()
+    else {
+      const runs = await ui.findAll({ type: 'Text', text: /▇/ })
+      expect(runs.filter(r => r.props.color === '#a1a1aa').length).toBe(2)
+    }
     await ui.unmount()
   }
 
@@ -738,4 +745,152 @@ test('/gs is the same command, its output the same card', async ($, on) => {
   })
   expect(await ui.find({ type: 'Text', text: /^› Re-armed/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: ' ● ARMED ' })).toBeDefined()
+})
+
+// The code review of 0.4.2, one test per finding.
+
+const LOW = { limits: [{ kind: 'five_hour', percentUsed: 20, resetsAt: RESETS_AT }] }
+
+test('a memo kept from another project is never resumed', async ($, on) => {
+  const other = '/elsewhere/GRACEFUL-STOP_2026-10-06_15h40.md'
+  const w = world(on, [], { ...LOW, store: { memoPath: other } })
+  w.files.set(other, '# Their memo')
+  expect(await command($, 'resume')).toMatch(/^No resume memo found/)
+
+  w.files.set('/proj/GRACEFUL-STOP_2026-10-05_21h30.md', '# Ours')
+  expect(await command($, 'resume')).toMatch(/proj[\/]GRACEFUL-STOP_2026-10-05_21h30\.md\.$/)
+})
+
+test('a memo already resumed from is not resumed again', async ($, on) => {
+  const w = world(on, [], LOW)
+  w.files.set('/proj/GRACEFUL-STOP_2026-10-05_21h30.md', '# Memo')
+  expect(await command($, 'resume')).toMatch(/Resuming from/)
+  await w.clock.advance(1)
+  expect(w.prompts.length).toBe(1)
+
+  expect(await command($, 'resume')).toMatch(/^No resume memo found/)
+  await w.clock.advance(1)
+  expect(w.prompts.length).toBe(1)
+})
+
+test('a real memo that keeps the provisional first line is not overwritten', async ($, on) => {
+  const agents = [AGENT]
+  const w = world(on, agents)
+  await $.session.measure(measure(90, 10))
+  const [path = ''] = [...w.files.keys()]
+  const real = `${(w.files.get(path) ?? '').split('\n')[0]}\n# Real memo, edited in place`
+  w.files.set(path, real)
+
+  agents[0] = { ...AGENT, status: 'completed' }
+  await $.turn.complete(agentDone('agent-1'))
+  agents.splice(0, agents.length)
+  await $.turn.complete(mainDone('main-1'))
+  expect(await step($)).toMatch(/Session stopped cleanly/)
+  expect(w.files.get(path)).toBe(real)
+})
+
+test('parallel tool calls keep to the grace calls and warn once', async ($, on) => {
+  const w = world(on, [AGENT])
+  await $.session.measure(measure(90, 10))
+  const calls = await Promise.all(Array.from({ length: 8 }, () => $.tool.call(bash('agent-2'))))
+
+  expect(calls.filter(c => c.deny !== undefined).length).toBe(3)
+  expect(w.notes.filter(n => n.agentId === 'agent-2').length).toBe(1)
+})
+
+test('a reading taken before its window reset starts no new stop after a resume', async ($, on) => {
+  const agents = [AGENT]
+  const w = world(on, agents)
+  await stopCleanly($, w, agents)
+  await w.clock.set(Date.parse(RESETS_AT) + 60_000)
+  expect(await command($, 'resume')).toMatch(/Resuming from/)
+  const notes = w.notes.length
+
+  agents.push(AGENT)
+  await $.session.measure(measure(100, 10))
+  expect(w.notes.length).toBe(notes)
+  expect(await command($, 'status')).toMatch(/^Phase: armed/)
+})
+
+test(
+  'a setting out of its bounds gives way to its default, and the start says so',
+  { options: { sessionThreshold: 0, weeklyThreshold: 250, overageBudgetUsd: -1 } },
+  async ($, on) => {
+    const w = world(on, [AGENT])
+    host(on)
+    await $.session.start(start)
+    expect(w.toasts.at(-1)).toBe(
+      'graceful-stop: not a valid value in /config, the default applies: Session trigger threshold, Weekly trigger threshold, Overage budget.',
+    )
+    expect(await command($, 'status')).toMatch(/thresholds session 90%, weekly 95%, overage budget \$2\.00/)
+
+    await $.session.measure(measure(89, 10))
+    expect(w.notes).toEqual([])
+    await $.session.measure(measure(90, 10))
+    expect(w.notes.length).toBeGreaterThan(0)
+  },
+)
+
+test('an interrupted subagent is not reported as completed', async ($, on) => {
+  const agents = [AGENT]
+  const w = world(on, agents)
+  await $.session.measure(measure(90, 10))
+  agents[0] = { ...AGENT, status: 'completed' }
+  await $.turn.complete({ ...agentDone('agent-1'), isAborted: true, reason: 'aborted' as const })
+
+  const memo = [...w.files.values()][0] ?? ''
+  expect(memo).toMatch(/Status: interrupted/)
+  expect(/Status: completed/.test(memo)).toBe(false)
+})
+
+test('the card and resume read the same credit', async ($, on) => {
+  const w = world(on, [], LOW)
+  w.files.set('/proj/GRACEFUL-STOP_2026-10-05_21h30.md', '# Memo')
+  await command($, 'off')
+  // A measure read more than the engine reads now.
+  await $.session.measure(measure(92, 10))
+
+  const ui = await band($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /^ +20 %$/ })).toBeDefined()
+  expect((await ui.find({ key: 'resume' }))?.props.variant).toBe('primary')
+  expect(await command($, 'resume')).toMatch(/Resuming from/)
+})
+
+test('memo names are in local time, and a second stop in the same minute gets its own', async ($, on) => {
+  const w = world(on, [AGENT])
+  await $.session.measure(measure(90, 10))
+  await command($, 'on')
+  await $.session.measure(measure(91, 10))
+
+  const d = new Date(NOW)
+  const p = (n: number) => String(n).padStart(2, '0')
+  const base = `GRACEFUL-STOP_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}h${p(d.getMinutes())}`
+  expect([...w.files.keys()].map(k => k.replace(/^.*\//, ''))).toEqual([`${base}.md`, `${base}-2.md`])
+})
+
+test('an unknown subcommand is refused and lists the valid ones', async ($, on) => {
+  const w = world(on, [AGENT])
+  expect(await command($, 'stpo')).toBe('Unknown subcommand "stpo". Use one of: status, stop, resume, on, off.')
+  expect(w.notes).toEqual([])
+  expect(await command($, 'status')).toMatch(/^Phase: armed/)
+})
+
+test('the gauges leave a thin line of the terminal background between them', async ($, on) => {
+  world(on, [AGENT])
+  await $.session.measure(both(52, 31))
+  const ui = await band($, 'terminal')
+  const [bar] = await ui.findAll({ type: 'Raster' })
+  const bytes = Uint8Array.from(atob(String(bar?.props.cells)), c => c.charCodeAt(0))
+  const words = new Uint32Array(bytes.buffer)
+  const cells = Array.from({ length: words.length / 3 }, (_, i) => ({
+    glyph: String.fromCodePoint(words[i * 3] ?? 0),
+    fg: words[i * 3 + 1],
+    bg: words[i * 3 + 2],
+  }))
+
+  // Every cell, the threshold's mark too, is the lower seven eighths of a
+  // block over the terminal's own background.
+  expect(cells.every(c => c.glyph === '▇' && c.bg === 0x01000000)).toBe(true)
+  expect(cells.filter(c => c.fg === 0xa1a1aa).length).toBe(1)
+  await ui.unmount()
 })

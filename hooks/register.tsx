@@ -22,8 +22,22 @@ const TOGGLE_KEY = `${NAME}.showSettings`
 const CREDIT_KEY = 'credit'
 const CREDIT_AT_KEY = 'creditAt'
 const MEMO_KEY = 'memoPath'
+// The memos already resumed from, so no resume runs one twice; the last few.
+const RESUMED_KEY = 'resumed'
+const MAX_RESUMED = 50
 // Memos written before the mod was renamed keep the old prefix.
 const MEMO_FILE = /^(GRACEFUL-STOP|CLEAN-END-OF-SESSION)_.*\.md$/
+const SUBCOMMANDS = ['status', 'stop', 'resume', 'on', 'off']
+
+// The numeric settings: a value that is not a number within its bounds gives
+// way to the default, and the session start says so.
+const SETTINGS = {
+  sessionThreshold: { label: 'Session trigger threshold', fallback: 90, min: 1, max: 100 },
+  weeklyThreshold: { label: 'Weekly trigger threshold', fallback: 95, min: 1, max: 100 },
+  overageBudgetUsd: { label: 'Overage budget', fallback: 2, min: 0, max: Infinity },
+  graceToolCalls: { label: 'Grace tool calls', fallback: 5, min: 0, max: Infinity },
+}
+type SettingKey = keyof typeof SETTINGS
 
 const ARMED: GracefulStopStatus = {
   phase: 'armed',
@@ -35,6 +49,7 @@ const ARMED: GracefulStopStatus = {
   memoPath: null,
   agents: [],
   idleTurns: 0,
+  fallbackHash: null,
 }
 
 const OFF: GracefulStopStatus = { ...ARMED, phase: 'off' }
@@ -54,6 +69,33 @@ type Config = {
   graceCalls: number
   /** Whether a new session starts armed, else off until the person arms it. */
   armAtStart: boolean
+  /** The labels of the settings whose value was not valid, replaced by their default. */
+  invalid: string[]
+}
+
+// A numeric setting, or null when it is not a number within its bounds; left
+// blank, its default.
+const settingOf = (raw: unknown, key: SettingKey) => {
+  const { fallback, min, max } = SETTINGS[key]
+  if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) return fallback
+  const n = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : NaN
+
+  return Number.isFinite(n) && n >= min && n <= max ? n : null
+}
+
+const configOf = (options: Record<string, unknown>): Config => {
+  const keys = Object.keys(SETTINGS) as SettingKey[]
+  const read = Object.fromEntries(keys.map(k => [k, settingOf(options[k], k)])) as Record<SettingKey, number | null>
+  const value = (k: SettingKey) => read[k] ?? SETTINGS[k].fallback
+
+  return {
+    sessionThreshold: value('sessionThreshold'),
+    weeklyThreshold: value('weeklyThreshold'),
+    budgetUsd: value('overageBudgetUsd'),
+    graceCalls: Math.floor(value('graceToolCalls')),
+    armAtStart: options.armAtStart !== false,
+    invalid: keys.filter(k => read[k] === null).map(k => SETTINGS[k].label),
+  }
 }
 
 // Whether the main loop is in a turn; a reload forgets it, which only means
@@ -95,14 +137,18 @@ const thresholdsText = (cfg: Config) =>
 const describeWindow =(w: SessionRateLimit | null) =>
   w === null ? 'credit unknown' : `${w.kind} at ${w.percentUsed}%`
 
-// The windows still over their threshold. A reading taken before its window
-// reset counts as reset: once the brake holds, no request refreshes it.
+// A reading taken before its window reset counts as reset: once the brake
+// holds, no request refreshes it.
+const isPastReset = (w: SessionRateLimit, now: number) =>
+  w.resetsAt !== undefined && Date.parse(w.resetsAt) <= now
+
+// The windows whose reading still holds.
+const currentWindows = (windows: readonly SessionRateLimit[], now: number) =>
+  windows.filter(w => !isPastReset(w, now))
+
+// The windows still over their threshold.
 const blockingWindows = (cfg: Config, windows: readonly SessionRateLimit[], now: number) =>
-  windows.filter(
-    w =>
-      w.percentUsed >= thresholdOf(cfg, w.kind) &&
-      !(w.resetsAt !== undefined && Date.parse(w.resetsAt) <= now),
-  )
+  currentWindows(windows, now).filter(w => w.percentUsed >= thresholdOf(cfg, w.kind))
 
 // When the last blocking window resets: NaN when one of them gives no time.
 const lastResetOf = (windows: readonly SessionRateLimit[]) =>
@@ -140,8 +186,25 @@ const clockOf = (at: number, now: number) => {
 const whenText = (at: number, now: number) =>
   Number.isNaN(at) ? 'at an unknown time' : `${clockOf(at, now)} (${remainingOf(at - now)})`
 
-const stamp = (ms: number) =>
-  new Date(ms).toISOString().slice(0, 16).replace('T', '_').replace(':', 'h')
+// A memo's date in the person's local time: `2026-10-09_12h05`.
+const stamp = (ms: number) => {
+  const d = new Date(ms)
+
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}h${pad(d.getMinutes())}`
+}
+
+// FNV-1a, enough to tell the mod's provisional memo from any other content.
+const hashOf = (text: string) => {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i += 1) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0
+
+  return h
+}
+
+// How a subagent's run ended, as its memo section says it.
+const ENDED: Record<string, string> = { answer: 'completed', aborted: 'interrupted', error: 'failed', refusal: 'refused' }
+// Ends the mod saw itself, which the agent list may not tell.
+const ENDED_BADLY = new Set(['interrupted', 'failed', 'refused'])
 
 const normalize = (path: string) => path.replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase()
 
@@ -287,20 +350,31 @@ async function fallbackMemo($: Engine, s: GracefulStopStatus) {
   ].join('\n')
 }
 
-async function isMemoReplaced($: Engine, path: string) {
-  if (!(await $.fs.exists(path))) return false
-  const current = await $.fs.read(path)
+// Whether the memo file holds anything but the provisional memo the mod last
+// wrote, even one that kept its first line.
+async function isMemoReplaced($: Engine, s: GracefulStopStatus) {
+  if (s.memoPath === null || !(await $.fs.exists(s.memoPath))) return false
+  const current = await $.fs.read(s.memoPath)
+  if (typeof current !== 'string') return false
+  const written = s.fallbackHash ?? null
 
-  return typeof current === 'string' && !current.startsWith(FALLBACK_MARK)
+  return written === null ? !current.startsWith(FALLBACK_MARK) : hashOf(current) !== written
 }
 
 // Writes the mod's own record of the stop, unless the orchestrator already
 // replaced it with the real memo; the agents' statuses are refreshed first.
 async function writeFallback($: Engine, s: GracefulStopStatus) {
-  if (s.memoPath === null || (await isMemoReplaced($, s.memoPath))) return
+  if (s.memoPath === null || (await isMemoReplaced($, s))) return
+  const path = s.memoPath
   const live = new Map((await $.agent.list()).map(a => [a.id, a.status as string]))
-  const agents = s.agents.map(a => ({ ...a, status: live.get(a.id) ?? a.status }))
-  await $.fs.write(s.memoPath, await fallbackMemo($, { ...s, agents }))
+  const agents = s.agents.map(a => ({
+    ...a,
+    status: ENDED_BADLY.has(a.status) ? a.status : (live.get(a.id) ?? a.status),
+  }))
+  const text = await fallbackMemo($, { ...s, agents })
+  await $.fs.write(path, text)
+  const hash = hashOf(text)
+  await update($, status, cur => (cur.memoPath === path ? { ...cur, fallbackHash: hash } : cur))
 }
 
 async function warnAgent($: Engine, cfg: Config, agentId: string, trigger: string) {
@@ -326,49 +400,67 @@ async function memoDir($: Engine) {
   return repo !== null && isWithin(root, repo.root) ? repo.root : root
 }
 
-// The session's credit reading, else the last one kept: a fresh session has
-// none before its first request.
-async function readWindows($: Engine): Promise<readonly SessionRateLimit[]> {
-  const live = (await $.session.usage()).rateLimits
-  if (live.length > 0) return live
-  const kept = await $.store.get(CREDIT_KEY).catch(() => undefined)
-
-  return Array.isArray(kept) ? (kept as SessionRateLimit[]) : []
-}
-
 // When the credit is back, as whenText says it, or null when it already is.
-async function creditBack($: Engine, cfg: Config) {
-  const now = await $.clock.now()
-  const blocking = blockingWindows(cfg, await readWindows($), now)
+const backOf = (cfg: Config, windows: readonly SessionRateLimit[], now: number) => {
+  const blocking = blockingWindows(cfg, windows, now)
 
   return blocking.length === 0 ? null : whenText(lastResetOf(blocking), now)
+}
+
+async function creditBack($: Engine, cfg: Config) {
+  const { reading } = await readCredit($)
+
+  return backOf(cfg, reading?.windows ?? [], await $.clock.now())
 }
 
 async function haltMessage($: Engine, cfg: Config, s: GracefulStopStatus) {
   return haltText(cfg, s, await creditBack($, cfg))
 }
 
+async function resumedMemos($: Engine) {
+  const kept = await $.store.get(RESUMED_KEY).catch(() => undefined)
+
+  return Array.isArray(kept) ? kept.filter((p): p is string => typeof p === 'string') : []
+}
+
 // The memo to resume from: this session's, the last one kept, else the newest
-// at the root the memos go to.
+// at the root the memos go to; never one of another project (the store is
+// shared by every project) nor one already resumed from.
 async function findMemo($: Engine, s: GracefulStopStatus) {
+  const dir = await memoDir($)
+  const resumed = new Set((await resumedMemos($)).map(normalize))
+  const isFree = (path: string) => isWithin(path, dir) && !resumed.has(normalize(path))
   const kept = await $.store.get(MEMO_KEY).catch(() => undefined)
   for (const path of [s.memoPath, typeof kept === 'string' ? kept : null]) {
-    if (path !== null && (await $.fs.exists(path))) return path
+    if (path !== null && isFree(path) && (await $.fs.exists(path))) return path
   }
-  const dir = await memoDir($)
   const newest = (await $.fs.list(dir).catch(() => []))
-    .filter(f => f.kind === 'file' && MEMO_FILE.test(f.name))
+    .filter(f => f.kind === 'file' && MEMO_FILE.test(f.name) && isFree(joinPath(dir, f.name)))
     .sort((a, b) => b.mtimeMs - a.mtimeMs || b.name.localeCompare(a.name))[0]
 
   return newest === undefined ? null : joinPath(dir, newest.name)
 }
 
-// Hands the orchestrator its resume prompt as a turn of its own, once idle.
+// A free path for a new memo: two stops in the same minute get two files.
+async function freshMemoPath($: Engine) {
+  const dir = await memoDir($)
+  const base = `GRACEFUL-STOP_${stamp(await $.clock.now())}`
+  for (let n = 1; ; n += 1) {
+    const path = joinPath(dir, n === 1 ? `${base}.md` : `${base}-${n}.md`)
+    if (!(await $.fs.exists(path))) return path
+  }
+}
+
+// Hands the orchestrator its resume prompt as a turn of its own, once idle;
+// once it went through, the memo is never resumed from again.
 async function submitResume($: Engine, memoPath: string) {
   const sent = await $.prompt.submit({ text: resumePrompt(memoPath) }).catch(() => null)
   if (sent === null || sent.drop !== undefined) {
     $.ui.toast(`${NAME}: the resume prompt did not go through${sent?.drop ? ` (${sent.drop})` : ''}.`)
+    return
   }
+  const resumed = [...(await resumedMemos($)), memoPath].slice(-MAX_RESUMED)
+  await $.store.set(RESUMED_KEY, resumed).catch(() => undefined)
 }
 
 // `/graceful-stop resume`: re-arms and relaunches the work from the
@@ -396,9 +488,7 @@ async function startStop($: Engine, cfg: Config, top: SessionRateLimit | null, t
 
   const agents = await activeAgents($)
   const hasWork = agents.length > 0 || isMainBusy
-  const memoPath = hasWork
-    ? joinPath(await memoDir($), `GRACEFUL-STOP_${stamp(await $.clock.now())}.md`)
-    : null
+  const memoPath = hasWork ? await freshMemoPath($) : null
   const stop: GracefulStopStatus = {
     ...ARMED,
     phase: hasWork ? 'stopping' : 'stopped',
@@ -454,7 +544,7 @@ async function recordReport($: Engine, id: string, report: string, agentStatus: 
 // A main turn ended with every agent done: the stop is over once the memo is
 // written, or after MAX_IDLE_TURNS turns that did not write it.
 async function settleMainTurn($: Engine, cfg: Config, s: GracefulStopStatus) {
-  const isWritten = s.memoPath === null || (await isMemoReplaced($, s.memoPath))
+  const isWritten = s.memoPath === null || (await isMemoReplaced($, s))
   if (isWritten || s.idleTurns + 1 >= MAX_IDLE_TURNS) {
     await halt($, cfg, 'stopped')
     return
@@ -530,7 +620,7 @@ const GREEN = 0x22c55e
 const AMBER = 0xf59e0b
 const RED = 0xef4444
 const TRACK = 0x3a3a3a
-const MARK = 0xd4d4d4
+const MARK = 0xa1a1aa
 const hex = (rgb: number) => `#${rgb.toString(16).padStart(6, '0')}`
 
 const mix = (from: number, to: number, t: number) => {
@@ -556,13 +646,19 @@ const gradientAt = (percent: number, threshold: number) => {
   return mix(AMBER, RED, (percent - amberAt) / (threshold - amberAt))
 }
 
-// Left-aligned blocks, one to seven eighths of a cell.
-const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
+// A Raster color for the terminal's own background.
+const DEFAULT_BG = 0x01000000
+// The lower seven eighths of a cell: the eighth above stays the terminal's
+// background, a thin line between two gauges.
+const BAR = '▇'
 
 type Cell = { glyph: string; fg: number; bg: number }
 
-// The gauge's cells, filled to the eighth of a cell; an empty cell is a block
-// in the track's color, and the threshold a thin mark on the track.
+// The gauge's cells, filled to the eighth of a cell: the cell where the fill
+// ends blends its color with the track's. An empty cell is the track, and
+// the threshold a lighter cell of it. No cell paints a background of its own:
+// one would fill the line between the gauges, and the terminal may carry it
+// over to the cells after it.
 const gaugeCells = (percent: number, threshold: number, width: number): Cell[] => {
   const eighths = Math.round((Math.min(100, Math.max(0, percent)) / 100) * width * 8)
   const mark = Math.min(width - 1, Math.round((threshold / 100) * width))
@@ -570,11 +666,11 @@ const gaugeCells = (percent: number, threshold: number, width: number): Cell[] =
   return Array.from({ length: width }, (_, i) => {
     const fill = eighths - i * 8
     const color = gradientAt(((i + 0.5) / width) * 100, threshold)
-    if (fill >= 8) return { glyph: '█', fg: color, bg: TRACK }
-    if (fill > 0) return { glyph: EIGHTHS[fill] ?? '▏', fg: color, bg: TRACK }
-    if (i === mark) return { glyph: '▏', fg: MARK, bg: TRACK }
+    if (fill >= 8) return { glyph: BAR, fg: color, bg: DEFAULT_BG }
+    if (fill > 0) return { glyph: BAR, fg: mix(TRACK, color, fill / 8), bg: DEFAULT_BG }
+    if (i === mark) return { glyph: BAR, fg: MARK, bg: DEFAULT_BG }
 
-    return { glyph: '█', fg: TRACK, bg: TRACK }
+    return { glyph: BAR, fg: TRACK, bg: DEFAULT_BG }
   })
 }
 
@@ -640,14 +736,16 @@ const gaugesOf = (cfg: Config, windows: readonly SessionRateLimit[], columns: nu
       }
     })
 
-// This session's reading: the one its last measure wrote, else the engine's
-// (a measure is raised only once a window moves a whole point), else the last
-// one kept, which the band says is old.
+// The credit reading, the one source of the card, the brake and resume: the
+// engine's, else the one the last measure wrote, else the last one kept, which
+// the band says is old. Reading the atom also redraws the band on a measure.
 async function readCredit($: Engine): Promise<{ reading: GracefulStopCredit | null; isKept: boolean }> {
   const measured = await read($, credit)
-  if (measured !== null) return { reading: measured, isKept: false }
   const live = (await $.session.usage()).rateLimits
-  if (live.length > 0) return { reading: { windows: [...live], at: await $.clock.now() }, isKept: false }
+  if (live.length > 0) {
+    return { reading: { windows: [...live], at: measured?.at ?? (await $.clock.now()) }, isKept: false }
+  }
+  if (measured !== null) return { reading: measured, isKept: false }
   const windows = await $.store.get(CREDIT_KEY).catch(() => undefined)
   const at = await $.store.get(CREDIT_AT_KEY).catch(() => undefined)
   if (!Array.isArray(windows) || windows.length === 0) return { reading: null, isKept: false }
@@ -728,7 +826,7 @@ async function drawPanel($: Engine, cfg: Config, e: ResolveInput, o: PanelOption
   await read($, minute)
   const { reading, isKept } = await readCredit($)
   const now = await $.clock.now()
-  const back = await creditBack($, cfg)
+  const back = backOf(cfg, reading?.windows ?? [], now)
   const canResume = !isWatching(s) && !o.isWorking && back === null
   const gauges = gaugesOf(cfg, reading?.windows ?? [], o.columns, now)
   const badge = BADGES[s.phase]
@@ -782,7 +880,7 @@ async function drawPanel($: Engine, cfg: Config, e: ResolveInput, o: PanelOption
             <Raster key={`bar-${g.name.trim()}`} columns={g.cells.length} rows={1} cells={rasterCells(g.cells)} />
           ) : (
             textRuns(g.cells).map((r, i) => (
-              <Text key={`run-${i}`} color={hex(r.fg)} backgroundColor={hex(r.bg)}>
+              <Text key={`run-${i}`} color={hex(r.fg)} backgroundColor={r.bg === DEFAULT_BG ? undefined : hex(r.bg)}>
                 {r.text}
               </Text>
             ))
@@ -811,7 +909,7 @@ async function runCommand($: Engine, cfg: Config, args: string) {
   const arg = args.trim().toLowerCase() || 'status'
 
   if (arg === 'stop') {
-    const top = peakOf((await $.session.usage()).rateLimits)
+    const top = peakOf(currentWindows((await $.session.usage()).rateLimits, await $.clock.now()))
     await update($, status, s => (s.phase === 'off' ? ARMED : s))
     await startStop($, cfg, top, `manual (${describeWindow(top)})`)
     const s = await read($, status)
@@ -831,18 +929,33 @@ async function runCommand($: Engine, cfg: Config, args: string) {
 
     return { text: `Off for this session. /${NAME} on to re-arm.` }
   }
+  if (arg !== 'status') {
+    return { text: `Unknown subcommand "${args.trim()}". Use one of: ${SUBCOMMANDS.join(', ')}.` }
+  }
 
   return { text: await statusText($, cfg) }
 }
 
-export const register: Register = (on, options) => {
-  const cfg: Config = {
-    sessionThreshold: Number(options.sessionThreshold ?? 90),
-    weeklyThreshold: Number(options.weeklyThreshold ?? 95),
-    budgetUsd: Number(options.overageBudgetUsd ?? 2),
-    graceCalls: Math.max(0, Math.floor(Number(options.graceToolCalls ?? 5))),
-    armAtStart: options.armAtStart !== false,
+// Counts a subagent's tool call after its warning; the decision rests on the
+// count the update wrote, so parallel calls neither pass the grace calls nor
+// warn twice.
+async function countCall($: Engine, cfg: Config, id: string, trigger: string) {
+  const seen = { before: undefined as number | undefined }
+  await update($, status, cur => {
+    seen.before = cur.warned[id]
+
+    return { ...cur, warned: { ...cur.warned, [id]: (cur.warned[id] ?? 0) + 1 } }
+  })
+  if (seen.before === undefined) {
+    await adoptAgent($, id)
+    await warnAgent($, cfg, id, trigger)
   }
+
+  return (seen.before ?? 0) < cfg.graceCalls
+}
+
+export const register: Register = (on, options) => {
+  const cfg = configOf(options)
   const isOpen = options.showSettings === true
 
   on('session.start', async ($, e, next) => {
@@ -865,6 +978,9 @@ export const register: Register = (on, options) => {
       await update($, started, () => true)
       if (!cfg.armAtStart) await update($, status, s => (s.phase === 'armed' ? OFF : s))
     }
+    if (cfg.invalid.length > 0) {
+      $.ui.toast(`${NAME}: not a valid value in /config, the default applies: ${cfg.invalid.join(', ')}.`)
+    }
     await tick($)
     $.clock.every(60_000, () => void tick($))
 
@@ -886,10 +1002,12 @@ export const register: Register = (on, options) => {
   })
 
   on('session.measure', async ($, e, next) => {
-    const top = peakOf(e.rateLimits)
-    const crossed = crossedWindow(cfg, e.rateLimits)
+    const at = await $.clock.now()
+    // A window whose reset time has passed no longer counts, whatever it read.
+    const current = currentWindows(e.rateLimits, at)
+    const top = peakOf(current)
+    const crossed = crossedWindow(cfg, current)
     if (e.changed.includes('rateLimits') && e.rateLimits.length > 0) {
-      const at = await $.clock.now()
       await update($, credit, () => ({ windows: [...e.rateLimits], at }))
       await $.store.set(CREDIT_KEY, e.rateLimits).catch(() => undefined)
       await $.store.set(CREDIT_AT_KEY, at).catch(() => undefined)
@@ -916,7 +1034,9 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) {
-      if (isWatching(await read($, status))) await recordReport($, e.agentId, e.answer, 'completed')
+      if (isWatching(await read($, status))) {
+        await recordReport($, e.agentId, e.answer, ENDED[e.reason] ?? e.reason)
+      }
 
       return next(e)
     }
@@ -968,18 +1088,9 @@ export const register: Register = (on, options) => {
     if (isHalted(s)) return { deny: await haltMessage($, cfg, s) }
     if (!isWatching(s) || e.agentId === undefined) return next(e)
 
-    const id = e.agentId
-    const used = s.warned[id]
-    if (used === undefined) {
-      await adoptAgent($, id)
-      await warnAgent($, cfg, id, s.trigger ?? 'threshold reached')
-    }
-    await update($, status, cur => ({
-      ...cur,
-      warned: { ...cur.warned, [id]: (cur.warned[id] ?? 0) + 1 },
-    }))
+    const isAllowed = await countCall($, cfg, e.agentId, s.trigger ?? 'threshold reached')
 
-    return (used ?? 0) >= cfg.graceCalls ? { deny: AGENT_CUTOFF } : next(e)
+    return isAllowed ? next(e) : { deny: AGENT_CUTOFF }
   })
 
   for (const command of COMMANDS) {

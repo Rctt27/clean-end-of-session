@@ -1,6 +1,6 @@
 # graceful-stop
 
-> Tested with Claude Code **2.1.292**.
+> Tested with Claude Code **2.1.295**.
 
 A Claude Code mod that stops your agents cleanly before your Pro or Max credit runs out, instead of letting the limit cut them off mid-task. They wrap up, report, and the orchestrator writes a memo you can resume from once your credit is back.
 
@@ -59,7 +59,7 @@ claude plugin install graceful-stop@graceful-stop
 
 Then `/reload-plugins`. From a local clone: `claude --plugin-dir /path/to/graceful-stop`.
 
-**Requirements:** Claude Code with mods (function-hook plugins, early access; tested on 2.1.289 – 2.1.292) and a Pro or Max subscription. Credit percentages only exist on a subscription: with an API key, only `/gs stop` works. Extra usage is optional; without it, the stop has to fit before 100%.
+**Requirements:** Claude Code with mods (function-hook plugins, early access; tested on 2.1.289 – 2.1.295) and a Pro or Max subscription. Credit percentages only exist on a subscription: with an API key, only `/gs stop` works. Extra usage is optional; without it, the stop has to fit before 100%.
 
 ## Good to know
 

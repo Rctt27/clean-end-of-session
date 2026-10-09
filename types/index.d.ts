@@ -38,6 +38,11 @@ export type GracefulStopStatus = {
   agents: GracefulStopAgent[]
   /** Main turns ended with every agent done but the memo still provisional. */
   idleTurns: number
+  /**
+   * A hash of the provisional memo the mod last wrote: any other content is
+   * the orchestrator's. Absent from a status kept by an older version.
+   */
+  fallbackHash?: number | null
 }
 
 /** A credit window as the engine reports it (SessionRateLimit). */
