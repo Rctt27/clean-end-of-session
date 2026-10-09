@@ -36,7 +36,7 @@ test('the mod notes to the orchestrator are drawn under its yellow label', async
   engine(on)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: PLUGIN, surface, ...userRow(NOTE) })
-    expect(await ui.find({ type: 'Text', text: '⏹ graceful-stop' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '⏹  graceful-stop' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^The Claude session credit has reached/ })).toBeDefined()
     expect(await ui.find({ key: 'engine' })).toBeUndefined()
     await ui.unmount()
@@ -52,7 +52,7 @@ test('the brake answers are drawn as the mod, not as a reply of the model', asyn
       component: 'AssistantMessage',
       props: { text: BRAKE, isFirstOfReply: true } as never,
     })
-    expect(await ui.find({ type: 'Text', text: '⏹ graceful-stop' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '⏹  graceful-stop' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^Session stopped cleanly/ })).toBeDefined()
     await ui.unmount()
   }
@@ -62,7 +62,7 @@ test('every other row is left to the engine', async ($, on) => {
   engine(on)
   for (const surface of SURFACES) {
     const typed = await $.ui.mount({ plugin: PLUGIN, surface, ...userRow('Analyse my repositories please') })
-    expect(await typed.find({ type: 'Text', text: '⏹ graceful-stop' })).toBeUndefined()
+    expect(await typed.find({ type: 'Text', text: '⏹  graceful-stop' })).toBeUndefined()
     await typed.unmount()
 
     const reply = await $.ui.mount({
@@ -71,7 +71,7 @@ test('every other row is left to the engine', async ($, on) => {
       component: 'AssistantMessage',
       props: { text: 'Here is the analysis.', isFirstOfReply: true } as never,
     })
-    expect(await reply.find({ type: 'Text', text: '⏹ graceful-stop' })).toBeUndefined()
+    expect(await reply.find({ type: 'Text', text: '⏹  graceful-stop' })).toBeUndefined()
     await reply.unmount()
   }
 })

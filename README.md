@@ -13,12 +13,12 @@ When the session credit gets close to its limit, the mod stops new work. Every r
 A panel above the prompt keeps the mod in view:
 
 ```
-╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ⏹ graceful-stop  ● ARMED  clean stop at 90 % (5 h) · 95 % (7 d) · overage budget $2.00 · 5 grace calls   [ Off ] [ Resume ] │
-│                                                                                                                                    │
-│ Session 5 h  ████████████████████▋░░░░░░░░░░░░░░▏░░░░    52 %   ↻ today 18:40 · in 2 h 13                                          │
-│ Week 7 d     ████████████▍░░░░░░░░░░░░░░░░░░░░░░░░░▏░    31 %   ↻ Thu 9 Oct 10:00 · in 2 d 3 h                                     │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ⏹  graceful-stop  ● ARMED  clean stop at 90 % (5 h) · 95 % (7 d) · overage budget $2.00 · 5 grace calls   [ Off ] [ Resume ] │
+│                                                                                                                              │
+│ Session 5 h  ████████████████████▋░░░░░░░░░░░░░░▏░░░░    52 %   ↻ today 18:40 · in 2 h 13                                    │
+│ Week 7 d     ████████████▍░░░░░░░░░░░░░░░░░░░░░░░░░▏░    31 %   ↻ Thu 9 Oct 10:00 · in 2 d 3 h                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 - **The state of the mod**, as a colored badge: armed, stopping, overage, stopped (with the time your credit is back), braked, or off.
@@ -40,7 +40,7 @@ Click a button in the fullscreen terminal or the desktop app. Elsewhere, `ctrl+x
 
 The weekly threshold is higher than the session one on purpose: the last 10% of a week is about a whole 5-hour session.
 
-Everything the mod says in the conversation is drawn in **yellow** under a `⏹ graceful-stop` label: its notes to the orchestrator and the brake's answers (which look like a reply but come from no model). Its command answers with the card described under The panel, above. You always tell the mod's actions apart from the agent's own work. This changes the drawing only, never what the model reads; press ctrl+o for the raw transcript.
+Everything the mod says in the conversation is drawn in **yellow** under a `⏹  graceful-stop` label: its notes to the orchestrator and the brake's answers (which look like a reply but come from no model). Its command answers with the card described under The panel, above. You always tell the mod's actions apart from the agent's own work. This changes the drawing only, never what the model reads; press ctrl+o for the raw transcript.
 
 ### The resume memo
 

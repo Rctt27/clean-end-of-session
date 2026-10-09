@@ -188,7 +188,7 @@ const AGENT_CUTOFF =
 // Everything the mod says in the conversation is drawn in this colour, under
 // this label, so it never reads as the agent's own work.
 const MOD_COLOR = 'yellow'
-const MOD_LABEL = `⏹ ${NAME}`
+const MOD_LABEL = `⏹  ${NAME}`
 // The panel's frame: a neutral gray that reads on dark and light themes.
 const CARD_BORDER = '#71717a'
 
