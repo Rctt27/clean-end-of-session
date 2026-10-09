@@ -843,17 +843,17 @@ test('an interrupted subagent is not reported as completed', async ($, on) => {
   expect(/Status: completed/.test(memo)).toBe(false)
 })
 
-test('the card and resume read the same credit', async ($, on) => {
+test('the card and resume read the same credit, the higher figure of a window', async ($, on) => {
   const w = world(on, [], LOW)
   w.files.set('/proj/GRACEFUL-STOP_2026-10-05_21h30.md', '# Memo')
   await command($, 'off')
-  // A measure read more than the engine reads now.
+  // A measure read more than the engine reads now: use only grows in a window.
   await $.session.measure(measure(92, 10))
 
   const ui = await band($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /^ +20 %$/ })).toBeDefined()
-  expect((await ui.find({ key: 'resume' }))?.props.variant).toBe('primary')
-  expect(await command($, 'resume')).toMatch(/Resuming from/)
+  expect(await ui.find({ type: 'Text', text: /^ +92 %$/ })).toBeDefined()
+  expect((await ui.find({ key: 'resume' }))?.props.dimColor).toBe(true)
+  expect(await command($, 'resume')).toMatch(/not been reset yet/)
 })
 
 test('memo names are in local time, and a second stop in the same minute gets its own', async ($, on) => {
@@ -893,4 +893,88 @@ test('the gauges leave a thin line of the terminal background between them', asy
   expect(cells.every(c => c.glyph === '▇' && c.bg === 0x01000000)).toBe(true)
   expect(cells.filter(c => c.fg === 0xa1a1aa).length).toBe(1)
   await ui.unmount()
+})
+
+// The account's credit, as Claude Code's /usage reads it.
+
+const SESSION_59 = { limits: [{ kind: 'five_hour', percentUsed: 59, resetsAt: RESETS_AT }] }
+
+function usageEndpoint(on: On, answer: unknown, login: 'bearer' | 'api-key' | null = 'bearer') {
+  const calls: { url: string; auth?: string }[] = []
+  on('session.authorize', () => ({ value: login === null ? null : { handle: 'handle-1', kind: login } }))
+  on('http.fetch', (_$, e) => {
+    calls.push({ url: e.url, auth: e.init?.auth })
+
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(answer) } }
+  })
+
+  return calls
+}
+
+const ACCOUNT_98 = {
+  five_hour: { utilization: 98, resets_at: RESETS_AT },
+  seven_day: { utilization: 32, resets_at: '2026-10-10T17:00:00Z' },
+}
+
+test('the card shows the account credit, whatever session or app spent it', async ($, on) => {
+  const w = world(on, [], SESSION_59)
+  host(on)
+  const calls = usageEndpoint(on, ACCOUNT_98)
+  await command($, 'off')
+  await $.session.start(start)
+  await w.clock.advance(1)
+
+  expect(calls).toEqual([{ url: 'https://api.anthropic.com/api/oauth/usage', auth: 'handle-1' }])
+  const ui = await band($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /^ +98 %$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ +59 %$/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^ +32 %$/ })).toBeDefined()
+  expect(await command($, 'status')).toMatch(/Credit: five_hour 98%, seven_day 32%/)
+})
+
+test('the account credit is read again each minute', async ($, on) => {
+  const w = world(on, [], SESSION_59)
+  host(on)
+  const calls = usageEndpoint(on, ACCOUNT_98)
+  await command($, 'off')
+  await $.session.start(start)
+  await w.clock.advance(1)
+  await w.clock.advance(60_000)
+
+  expect(calls.length).toBe(2)
+})
+
+test('the account credit starts the clean stop, though this session spent little', async ($, on) => {
+  const w = world(on, [AGENT], SESSION_59)
+  host(on)
+  usageEndpoint(on, { five_hour: { utilization: 91, resets_at: RESETS_AT } })
+  await $.session.start(start)
+  await w.clock.advance(1)
+
+  expect(w.notes.find(n => n.agentId === 'agent-1')?.text).toMatch(/five_hour at 91%/)
+  expect(await command($, 'status')).toMatch(/^Phase: stopping/)
+})
+
+test('without a subscription login the card keeps the session reading and asks nothing', async ($, on) => {
+  const w = world(on, [], SESSION_59)
+  host(on)
+  const calls = usageEndpoint(on, ACCOUNT_98, 'api-key')
+  await $.session.start(start)
+  await w.clock.advance(1)
+
+  expect(calls).toEqual([])
+  const ui = await band($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /^ +59 %$/ })).toBeDefined()
+})
+
+test('an answer that reads as nothing keeps the session reading', async ($, on) => {
+  const w = world(on, [], SESSION_59)
+  host(on)
+  usageEndpoint(on, { error: 'not found' })
+  await $.session.start(start)
+  await w.clock.advance(1)
+
+  const ui = await band($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /^ +59 %$/ })).toBeDefined()
+  expect(await command($, 'status')).toMatch(/^Phase: armed/)
 })

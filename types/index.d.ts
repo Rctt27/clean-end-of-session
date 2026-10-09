@@ -67,6 +67,8 @@ declare module 'claude-code' {
       status: GracefulStopStatus
       /** The last reading of this session; null before its first request. */
       credit: GracefulStopCredit | null
+      /** The account's last reading, from Claude Code's usage endpoint; null before one came. */
+      account: GracefulStopCredit | null
       /** The current minute, ticked so the band's reset countdowns move. */
       minute: number
       /** Whether this session's start was seen: a reload must not disarm it again. */

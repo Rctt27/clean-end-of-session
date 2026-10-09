@@ -70,16 +70,16 @@ Then `/reload-plugins`. From a local clone: `claude --plugin-dir /path/to/gracef
 ## Good to know
 
 - The overage budget is an estimate at API prices, not your invoice. The monthly cap you set on claude.ai is the real safety net.
-- Readings come with each model answer, so usage from elsewhere (another terminal, claude.ai) shows up at the next one. Reset times are shown in local time.
+- The gauges show your whole account, like `/usage`: every session and claude.ai count. The mod reads it once a minute, so usage elsewhere shows up within a minute and can start the stop. Reset times are shown in local time.
 - A tool already running isn't interrupted; the next call is refused.
 - Teammates in their own terminal pane are out of reach; subagents started by the Agent tool are covered.
 - Reports are captured from Claude Code's internal `SubagentHandback` tool. If that changes, the memo loses them but the rest still works.
 
 ## What it touches
 
-Nothing leaves your machine: the mod makes no network calls.
+The mod makes one network call, once a minute: it reads your account's usage from Anthropic (`api.anthropic.com/api/oauth/usage`, the endpoint `/usage` uses). Claude Code adds your login to the request; the mod never sees it. Nothing else leaves your machine.
 
-- **Reads:** the session's credit windows and cost, the list of running subagents, and their status reports. Nothing else from the conversation.
+- **Reads:** your account's usage, the session's credit windows and cost, the list of running subagents, and their status reports. Nothing else from the conversation.
 - **Writes:** the memo, `GRACEFUL-STOP_<date>.md` at the root of your repo, during a stop only. It copies the subagents' reports into it.
 - **Keeps** in Claude Code's plugin store, on your machine: the last credit reading and when it was taken, the last memo's path, and the memos already resumed from.
 - **Acts on the session:** it adds its notes to the conversation, submits the resume prompt when you resume, and refuses new subagents, tool calls past the grace calls, and requests once stopped.
@@ -87,7 +87,8 @@ Nothing leaves your machine: the mod makes no network calls.
 ## Troubleshooting
 
 - **No card above the prompt:** it's folded. `ctrl+x ctrl+a` unfolds it, and `/gs` shows the card anyway.
-- **"No credit reading yet":** the percentages come with the first model answer. With an API key there are none, so only `/gs stop` works.
+- **"No credit reading yet":** the account's usage hasn't come in yet; it comes within a minute, or with the first model answer. With an API key there is none, so only `/gs stop` works.
+- **The gauges lag behind `/usage`:** the account read failed (offline, or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` set), so the card falls back on this session's own reading.
 - **A setting seems ignored:** an out-of-range value falls back to its default, and the session start says which one.
 - **Resume finds no memo:** it looks at the root of the current repo and skips memos already resumed from. You can still ask Claude to read a memo yourself.
 - **A change doesn't show after an update:** run `/reload-plugins`.

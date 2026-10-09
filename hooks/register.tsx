@@ -28,6 +28,11 @@ const MAX_RESUMED = 50
 // Memos written before the mod was renamed keep the old prefix.
 const MEMO_FILE = /^(GRACEFUL-STOP|CLEAN-END-OF-SESSION)_.*\.md$/
 const SUBCOMMANDS = ['status', 'stop', 'resume', 'on', 'off']
+// Where Claude Code's /usage reads the account's windows, whatever session or
+// app spent them; asked with the session's own credential, held by the host.
+const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+const ACCOUNT_KINDS = ['five_hour', 'seven_day']
+const ACCOUNT_EVERY_MS = 60_000
 
 // The numeric settings: a value that is not a number within its bounds gives
 // way to the default, and the session start says so.
@@ -56,6 +61,7 @@ const OFF: GracefulStopStatus = { ...ARMED, phase: 'off' }
 
 const status = atom({ plugin: 'graceful-stop', key: 'status' } as const, ARMED)
 const credit = atom({ plugin: 'graceful-stop', key: 'credit' } as const, null)
+const account = atom({ plugin: 'graceful-stop', key: 'account' } as const, null)
 const minute = atom({ plugin: 'graceful-stop', key: 'minute' } as const, 0)
 const started = atom({ plugin: 'graceful-stop', key: 'started' } as const, false)
 
@@ -149,6 +155,51 @@ const currentWindows = (windows: readonly SessionRateLimit[], now: number) =>
 // The windows still over their threshold.
 const blockingWindows = (cfg: Config, windows: readonly SessionRateLimit[], now: number) =>
   currentWindows(windows, now).filter(w => w.percentUsed >= thresholdOf(cfg, w.kind))
+
+// Two readings of one window: their reset times agree, give or take the
+// rounding of each source, or one of them has none.
+const isSameWindow = (a: SessionRateLimit, b: SessionRateLimit) =>
+  a.resetsAt === undefined ||
+  b.resetsAt === undefined ||
+  Math.abs(Date.parse(a.resetsAt) - Date.parse(b.resetsAt)) < 10 * 60_000
+
+// One reading per window out of several sources, however old: the later
+// window, and within one window the higher figure, as a window's use only
+// grows until it resets.
+const mergeWindows = (...readings: (readonly SessionRateLimit[])[]) =>
+  readings.flat().reduce<SessionRateLimit[]>((out, w) => {
+    const i = out.findIndex(o => o.kind === w.kind)
+    const o = out[i]
+    if (o === undefined) return [...out, w]
+    const isNewer = isSameWindow(o, w)
+      ? w.percentUsed > o.percentUsed
+      : Date.parse(w.resetsAt ?? '') > Date.parse(o.resetsAt ?? '')
+
+    return isNewer ? out.map((x, j) => (j === i ? w : x)) : out
+  }, [])
+
+// The usage endpoint's answer as rate-limit windows: `utilization` 0 to 100,
+// `resets_at` ISO 8601; null when it reads as nothing.
+const parseAccount = (text: string): SessionRateLimit[] | null => {
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof data !== 'object' || data === null) return null
+  const windows = ACCOUNT_KINDS.flatMap((kind): SessionRateLimit[] => {
+    const w = (data as Record<string, unknown>)[kind]
+    if (typeof w !== 'object' || w === null) return []
+    const { utilization, resets_at: resets } = w as { utilization?: unknown; resets_at?: unknown }
+    if (typeof utilization !== 'number' || !Number.isFinite(utilization)) return []
+    const percentUsed = Math.round(utilization * 10) / 10
+
+    return typeof resets === 'string' ? [{ kind, percentUsed, resetsAt: resets }] : [{ kind, percentUsed }]
+  })
+
+  return windows.length === 0 ? null : windows
+}
 
 // When the last blocking window resets: NaN when one of them gives no time.
 const lastResetOf = (windows: readonly SessionRateLimit[]) =>
@@ -573,10 +624,59 @@ async function checkBudget($: Engine, cfg: Config, costUsd: number | undefined) 
   if (spent >= cfg.budgetUsd) await halt($, cfg, 'braked')
 }
 
+// A credit reading, this session's or the account's: past a threshold the
+// clean stop starts, at 100% it goes on in overage. A window whose reset time
+// has passed no longer counts, whatever it read.
+async function applyReading($: Engine, cfg: Config, windows: readonly SessionRateLimit[], costUsd: number | undefined) {
+  const current = currentWindows(windows, await $.clock.now())
+  const crossed = crossedWindow(cfg, current)
+  if (crossed !== null) await startStop($, cfg, crossed, describeWindow(crossed))
+  const top = peakOf(current)
+  if (top !== null && top.percentUsed >= 100) {
+    await update($, status, (s): GracefulStopStatus =>
+      s.phase === 'stopping' ? { ...s, phase: 'overage', baselineUsd: costUsd ?? 0 } : s,
+    )
+  }
+  await checkBudget($, cfg, costUsd)
+}
+
+// Keeps a reading for the next session, merged with the one kept: a session's
+// own reading may lag behind the account's.
+async function keepReading($: Engine, windows: readonly SessionRateLimit[], at: number) {
+  const kept = await $.store.get(CREDIT_KEY).catch(() => undefined)
+  const merged = mergeWindows(Array.isArray(kept) ? (kept as SessionRateLimit[]) : [], windows)
+  await $.store.set(CREDIT_KEY, merged).catch(() => undefined)
+  await $.store.set(CREDIT_AT_KEY, at).catch(() => undefined)
+}
+
+// The account's windows, as /usage reads them; null without a subscription
+// login, where the host refuses the request, or when the answer reads as
+// nothing.
+async function fetchAccount($: Engine) {
+  const auth = await $.session.authorize().catch(() => null)
+  if (auth === null || auth.kind !== 'bearer') return null
+  const res = await $.http
+    .fetch(USAGE_URL, { auth: auth.handle, headers: { 'anthropic-beta': 'oauth-2025-04-20' } })
+    .catch(() => null)
+
+  return res !== null && res.ok ? parseAccount(res.text) : null
+}
+
+// Reads the account's credit: the card shows it, and it starts the clean
+// stop whatever session or app spent it.
+async function refreshAccount($: Engine, cfg: Config) {
+  const windows = await fetchAccount($)
+  if (windows === null) return
+  const at = await $.clock.now()
+  await update($, account, () => ({ windows, at }))
+  await keepReading($, windows, at)
+  await applyReading($, cfg, windows, (await $.session.usage()).cost?.usd)
+}
+
 async function statusText($: Engine, cfg: Config) {
   const s = await read($, status)
-  const usage = await $.session.usage()
-  const windows = usage.rateLimits.map(w => `${w.kind} ${w.percentUsed}%`).join(', ') || 'no reading yet'
+  const { reading } = await readCredit($)
+  const windows = (reading?.windows ?? []).map(w => `${w.kind} ${w.percentUsed}%`).join(', ') || 'no reading yet'
   const warned = Object.entries(s.warned)
   const back = await creditBack($, cfg)
   const lines = [
@@ -737,15 +837,20 @@ const gaugesOf = (cfg: Config, windows: readonly SessionRateLimit[], columns: nu
     })
 
 // The credit reading, the one source of the card, the brake and resume: the
-// engine's, else the one the last measure wrote, else the last one kept, which
-// the band says is old. Reading the atom also redraws the band on a measure.
+// account's, from the usage endpoint, merged with this session's own (the
+// engine's, the last measure's), so the newer figure of each window wins;
+// else the last one kept, which the band says is old. Reading the atoms also
+// redraws the band on a measure and on each account reading.
 async function readCredit($: Engine): Promise<{ reading: GracefulStopCredit | null; isKept: boolean }> {
+  const fetched = await read($, account)
   const measured = await read($, credit)
   const live = (await $.session.usage()).rateLimits
-  if (live.length > 0) {
-    return { reading: { windows: [...live], at: measured?.at ?? (await $.clock.now()) }, isKept: false }
+  const merged = mergeWindows(fetched?.windows ?? [], live, measured?.windows ?? [])
+  if (merged.length > 0) {
+    const at = fetched?.at ?? measured?.at ?? (await $.clock.now())
+
+    return { reading: { windows: merged, at }, isKept: false }
   }
-  if (measured !== null) return { reading: measured, isKept: false }
   const windows = await $.store.get(CREDIT_KEY).catch(() => undefined)
   const at = await $.store.get(CREDIT_AT_KEY).catch(() => undefined)
   if (!Array.isArray(windows) || windows.length === 0) return { reading: null, isKept: false }
@@ -983,6 +1088,9 @@ export const register: Register = (on, options) => {
     }
     await tick($)
     $.clock.every(60_000, () => void tick($))
+    // The account's reading, once the start has answered, then each minute.
+    $.clock.after(1, () => refreshAccount($, cfg))
+    $.clock.every(ACCOUNT_EVERY_MS, () => void refreshAccount($, cfg))
 
     return next(e)
   })
@@ -1002,26 +1110,12 @@ export const register: Register = (on, options) => {
   })
 
   on('session.measure', async ($, e, next) => {
-    const at = await $.clock.now()
-    // A window whose reset time has passed no longer counts, whatever it read.
-    const current = currentWindows(e.rateLimits, at)
-    const top = peakOf(current)
-    const crossed = crossedWindow(cfg, current)
     if (e.changed.includes('rateLimits') && e.rateLimits.length > 0) {
+      const at = await $.clock.now()
       await update($, credit, () => ({ windows: [...e.rateLimits], at }))
-      await $.store.set(CREDIT_KEY, e.rateLimits).catch(() => undefined)
-      await $.store.set(CREDIT_AT_KEY, at).catch(() => undefined)
+      await keepReading($, e.rateLimits, at)
     }
-
-    if (crossed !== null) {
-      await startStop($, cfg, crossed, describeWindow(crossed))
-    }
-    if (top !== null && top.percentUsed >= 100) {
-      await update($, status, (s): GracefulStopStatus =>
-        s.phase === 'stopping' ? { ...s, phase: 'overage', baselineUsd: e.cost?.usd ?? 0 } : s,
-      )
-    }
-    await checkBudget($, cfg, e.cost?.usd)
+    await applyReading($, cfg, e.rateLimits, e.cost?.usd)
 
     return next(e)
   })
