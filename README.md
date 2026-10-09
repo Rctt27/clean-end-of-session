@@ -12,14 +12,7 @@ When the session credit gets close to its limit, the mod stops new work. Every r
 
 A panel above the prompt keeps the mod in view:
 
-```
-╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ⏹  graceful-stop   ● ARMED  clean stop at 90 % (5h) · 95 % (7d) · overage budget $2.00 · 5 grace calls   [ Off ] [ Resume ] │
-│                                                                                                                             │
-│       Session 5h  ████████████████████████▌░░░░░░░░░░░░░░░░░▏░░░░   52 %   ↻ today 18:40 · in 2 h 13                        │
-│          Week 7d  ██████████████▋░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░▏░   31 %   ↻ Thu 9 Oct 10:00 · in 2 d 3 h                   │
-╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-```
+![The graceful-stop card: a green ARMED badge with the settings, Off and Resume buttons, and a gauge for the 5-hour and the 7-day windows with their reset times](docs/card.png)
 
 - **The state of the mod**, as a colored badge: armed, stopping, overage, stopped (with the time your credit is back), braked, or off.
 - **A gauge per credit window**, 5 hours and 7 days, aligned under the badge and as long as the thresholds beside it, filled to the eighth of a character. Its color fades from green to amber 15 points before the window's threshold, then to red at it; the thin `▏` on the dark track is the threshold. It moves as the agent works, one point at a time, with each answer from the model. The terminal paints it cell by cell in true color; the desktop app draws the same gauge as colored text.
