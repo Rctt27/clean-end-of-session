@@ -25,6 +25,12 @@ It also works from a new session in the same repo: the mod remembers the last me
 
 The memo and the reports are written in your language. Anything the mod says in the conversation shows up in yellow, so you can tell it apart from the agent's own work.
 
+## Examples
+
+- **A long job hits the limit overnight.** Four subagents are refactoring a codebase when the 5-hour window reaches 90%. They finish their current step and report back. In the morning you find the memo at the root of the repo, and `/gs resume` relaunches what was left.
+- **You need to step away.** `/gs stop` winds everything down now, with the same memo, instead of waiting for a threshold.
+- **You come back in a new session.** In the same repo, `/gs resume` finds the last memo. If your credit isn't back yet, it tells you when it will be.
+
 ## Commands
 
 `/gs` is short for `/graceful-stop`.
@@ -68,6 +74,27 @@ Then `/reload-plugins`. From a local clone: `claude --plugin-dir /path/to/gracef
 - A tool already running isn't interrupted; the next call is refused.
 - Teammates in their own terminal pane are out of reach; subagents started by the Agent tool are covered.
 - Reports are captured from Claude Code's internal `SubagentHandback` tool. If that changes, the memo loses them but the rest still works.
+
+## What it touches
+
+Nothing leaves your machine: the mod makes no network calls.
+
+- **Reads:** the session's credit windows and cost, the list of running subagents, and their status reports. Nothing else from the conversation.
+- **Writes:** the memo, `GRACEFUL-STOP_<date>.md` at the root of your repo, during a stop only. It copies the subagents' reports into it.
+- **Keeps** in Claude Code's plugin store, on your machine: the last credit reading and when it was taken, the last memo's path, and the memos already resumed from.
+- **Acts on the session:** it adds its notes to the conversation, submits the resume prompt when you resume, and refuses new subagents, tool calls past the grace calls, and requests once stopped.
+
+## Troubleshooting
+
+- **No card above the prompt:** it's folded. `ctrl+x ctrl+a` unfolds it, and `/gs` shows the card anyway.
+- **"No credit reading yet":** the percentages come with the first model answer. With an API key there are none, so only `/gs stop` works.
+- **A setting seems ignored:** an out-of-range value falls back to its default, and the session start says which one.
+- **Resume finds no memo:** it looks at the root of the current repo and skips memos already resumed from. You can still ask Claude to read a memo yourself.
+- **A change doesn't show after an update:** run `/reload-plugins`.
+
+## Support
+
+Bugs and questions: [GitHub issues](https://github.com/Rctt27/graceful-stop/issues).
 
 ## Development
 
