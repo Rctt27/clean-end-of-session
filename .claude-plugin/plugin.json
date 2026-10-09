@@ -26,7 +26,7 @@
     },
     "armAtStart": {
       "type": "boolean",
-      "title": "graceful-stop · Arm at session start",
+      "title": "graceful-stop · Armed by default at session start",
       "description": "Arms the clean stop in every new session. Off, each session starts off and the panel's On button arms it.",
       "default": true
     },

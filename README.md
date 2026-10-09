@@ -44,7 +44,7 @@ In `/config`, set the **▸ graceful-stop** row to `true` to show the settings (
 
 | Setting | Default |
 | --- | --- |
-| Arm at session start: on in every new session | on (off: each session starts disarmed, `/gs on` arms it) |
+| Armed by default at session start | `true` (`false`: each session starts disarmed, `/gs on` arms it) |
 | Session threshold | 90% |
 | Weekly threshold | 95% |
 | Overage budget | $2 |
