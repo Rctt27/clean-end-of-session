@@ -552,7 +552,7 @@ const band = ($: Engine, surface: (typeof SURFACES)[number], isWorking = false) 
     plugin: 'graceful-stop',
     surface,
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking, maxRows: 12, bodyColumns: 100, scroll: { offset: 0, bodyRows: 12 }, view: {} },
+    props: { hasSurvey: false, isWorking, maxRows: 12, bodyColumns: 140, scroll: { offset: 0, bodyRows: 12 }, view: {} },
   })
 
 test('the band shows the state and a gauge per window, moving as the credit does', async ($, on) => {
@@ -561,12 +561,23 @@ test('the band shows the state and a gauge per window, moving as the credit does
   for (const surface of SURFACES) {
     const ui = await band($, surface)
     expect(await ui.find({ type: 'Text', text: ' ● ARMED ' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'clean stop at 90 % (5 h) · 95 % (7 d) · overage budget $2.00 · 5 grace calls' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: ' clean stop at 90 % (5h) · 95 % (7d) · overage budget $2.00 · 5 grace calls' })).toBeDefined()
     expect((await ui.find({ type: 'Text', text: /^ +52 %$/ }))?.props.color).toBe('#22c55e')
     expect(await ui.find({ type: 'Text', text: /^ {3}↻ (today|tomorrow) \d\d:\d\d · in 2 h 13$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^ +31 %$/ })).toBeDefined()
     // The terminal paints the gauge cell by cell; the desktop draws it as text.
-    if (surface === 'terminal') expect(await ui.findAll({ type: 'Raster' })).toHaveLength(2)
+    // The gauges start under the badge and end under the `·` after `95 % (7d)`:
+    // ` ● ARMED `, a space, `clean stop at 90 % (5h) · 95 % (7d)`, ` ·`.
+    const span = ' ● ARMED '.length + 1 + 'clean stop at 90 % (5h) · 95 % (7d)'.length + 2
+    expect(await ui.find({ type: 'Text', text: 'Session 5h' })).toBeDefined()
+    // Each window's name is right-aligned on the mod's name above it.
+    const names = (await ui.findAll({ type: 'Box' })).filter(b => b.props.justifyContent === 'flex-end')
+    expect(names.map(b => b.props.width)).toEqual(['graceful-stop'.length, 'graceful-stop'.length])
+    expect(await ui.find({ type: 'Text', text: 'Week 7d' })).toBeDefined()
+    if (surface === 'terminal') {
+      const bars = await ui.findAll({ type: 'Raster' })
+      expect(bars.map(b => b.props.columns)).toEqual([span, span])
+    }
     else expect(await ui.find({ type: 'Text', text: /▏/ })).toBeDefined()
     await ui.unmount()
   }
@@ -597,7 +608,7 @@ test('the band Resume button is dimmed until the credit is back, then resumes', 
   await stopCleanly($, w, agents)
   const ui = await band($, 'terminal')
   expect((await ui.find({ key: 'resume' }))?.props.dimColor).toBe(true)
-  expect(await ui.find({ type: 'Text', text: new RegExp(`^stopped cleanly · credit back ${BACK.source}$`) })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: new RegExp(`^ stopped cleanly · credit back ${BACK.source}$`) })).toBeDefined()
 
   await ui.press({ key: 'resume' })
   expect(w.toasts.at(-1)).toMatch(/not been reset yet/)

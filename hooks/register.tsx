@@ -505,7 +505,7 @@ async function statusText($: Engine, cfg: Config) {
 // The band above the prompt: a card with a status badge and the buttons, then
 // one gauge per credit window.
 
-const WINDOW_NAMES: Record<string, string> = { five_hour: 'Session 5 h', seven_day: 'Week 7 d', spend_limit: 'Spend' }
+const WINDOW_NAMES: Record<string, string> = { five_hour: 'Session 5h', seven_day: 'Week 7d', spend_limit: 'Spend' }
 const windowName = (kind: string) => WINDOW_NAMES[kind] ?? kind
 const windowRank = (kind: string) => {
   const rank = Object.keys(WINDOW_NAMES).indexOf(kind)
@@ -513,13 +513,16 @@ const windowRank = (kind: string) => {
   return rank < 0 ? Number.MAX_SAFE_INTEGER : rank
 }
 
-// Cells around the gauge: the window's name, then `  100 %`; the card's
-// border and padding take 4 more.
-const NAME_CELLS = 13
+// The card's left column: the icon, then the mod's name in the header and
+// each window's name under it, right-aligned on the mod's name; then a gap.
+// The badge and the gauges start at the same column whatever width the
+// terminal gives the icon.
+const ICON_CELLS = 3
+const NAME_CELLS = NAME.length
+const LEFT_CELLS = ICON_CELLS + NAME_CELLS + 2
+// Cells after the gauge for `  100 %`; the card's border and padding take 4.
 const PERCENT_CELLS = 7
 const CARD_CELLS = 4
-const GAUGE_MAX = 48
-const GAUGE_MIN = 12
 
 // Colors as 0xRRGGBB: the gauge fades from green to amber to red as it nears
 // the window's threshold, over a dark track.
@@ -624,12 +627,12 @@ const gaugesOf = (cfg: Config, windows: readonly SessionRateLimit[], columns: nu
       const said = isReset
         ? `↻ reset since ${clockOf(resetsAt, now)}`
         : Number.isNaN(resetsAt) ? '' : `↻ ${clockOf(resetsAt, now)} · ${remainingOf(resetsAt - now)}`
-      const room = columns - CARD_CELLS - NAME_CELLS - PERCENT_CELLS
-      const tail = said === '' || Math.min(GAUGE_MAX, room - said.length - 3) < GAUGE_MIN ? '' : `   ${said}`
-      const width = Math.max(1, Math.min(GAUGE_MAX, room - tail.length))
+      const room = columns - CARD_CELLS - LEFT_CELLS - PERCENT_CELLS
+      const width = Math.max(1, Math.min(gaugeSpan(cfg), room))
+      const tail = said === '' || room - width < said.length + 3 ? '' : `   ${said}`
 
       return {
-        name: windowName(w.kind).padEnd(NAME_CELLS),
+        name: windowName(w.kind),
         cells: gaugeCells(percent, threshold, width),
         color: hex(gradientAt(percent, threshold)),
         percent: `${String(Math.round(percent)).padStart(5)} %`,
@@ -663,9 +666,17 @@ const BADGES: Record<GracefulStopStatus['phase'], { word: string; fg: string; bg
 }
 
 // The settings, beside the badge while the mod is armed.
+const thresholdsPart = (cfg: Config) =>
+  `clean stop at ${cfg.sessionThreshold} % (5h) · ${cfg.weeklyThreshold} % (7d)`
 const settingsText = (cfg: Config) =>
-  `clean stop at ${cfg.sessionThreshold} % (5 h) · ${cfg.weeklyThreshold} % (7 d) · ` +
-  `overage budget ${usd(cfg.budgetUsd)} · ${cfg.graceCalls} grace calls`
+  `${thresholdsPart(cfg)} · overage budget ${usd(cfg.budgetUsd)} · ${cfg.graceCalls} grace calls`
+
+// The gauges span the armed header from the badge's left edge to the `·`
+// after the thresholds: the badge, the space before the detail, the
+// thresholds, then ` ·`.
+const gaugeSpan = (cfg: Config) => badgeText('armed').length + 1 + thresholdsPart(cfg).length + 2
+
+const badgeText = (phase: GracefulStopStatus['phase']) => ` ● ${BADGES[phase].word} `
 
 const phaseDetail = (cfg: Config, s: GracefulStopStatus, back: string | null) => {
   const whenBack = back === null ? 'credit is back' : `credit back ${back}`
@@ -731,10 +742,15 @@ async function drawPanel($: Engine, cfg: Config, e: ResolveInput, o: PanelOption
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={CARD_BORDER} paddingX={1}>
       <Box flexDirection="row" justifyContent="space-between" gap={2}>
-        <Box flexDirection="row" flexShrink={1} gap={1}>
-          <Text color={MOD_COLOR} bold>{MOD_LABEL}</Text>
-          <Text color={badge.fg} backgroundColor={badge.bg} bold>{` ● ${badge.word} `}</Text>
-          <Text dimColor wrap="truncate">{phaseDetail(cfg, s, isHalted(s) ? back : null)}</Text>
+        <Box flexDirection="row" flexShrink={1}>
+          <Box width={ICON_CELLS} flexShrink={0}>
+            <Text color={MOD_COLOR} bold>⏹</Text>
+          </Box>
+          <Box width={LEFT_CELLS - ICON_CELLS} flexShrink={0}>
+            <Text color={MOD_COLOR} bold>{NAME}</Text>
+          </Box>
+          <Text color={badge.fg} backgroundColor={badge.bg} bold>{badgeText(s.phase)}</Text>
+          <Text dimColor wrap="truncate">{` ${phaseDetail(cfg, s, isHalted(s) ? back : null)}`}</Text>
         </Box>
         <Box flexDirection="row" flexShrink={0} gap={1}>
           <Button key="toggle" hotkey="o" onPress={() => toggle($)}>
@@ -757,7 +773,11 @@ async function drawPanel($: Engine, cfg: Config, e: ResolveInput, o: PanelOption
       <Box height={1} />
       {gauges.map(g => (
         <Box key={`gauge-${g.name.trim()}`} flexDirection="row">
-          <Text bold>{g.name}</Text>
+          <Box width={ICON_CELLS} flexShrink={0} />
+          <Box width={NAME_CELLS} flexShrink={0} justifyContent="flex-end">
+            <Text bold>{g.name}</Text>
+          </Box>
+          <Box width={LEFT_CELLS - ICON_CELLS - NAME_CELLS} flexShrink={0} />
           {Raster !== null ? (
             <Raster key={`bar-${g.name.trim()}`} columns={g.cells.length} rows={1} cells={rasterCells(g.cells)} />
           ) : (
