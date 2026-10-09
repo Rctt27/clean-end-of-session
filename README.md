@@ -1,140 +1,82 @@
 # graceful-stop
 
-> **Compatibility:** last tested and approved with **Claude Code 2.1.292**.
+> Tested with Claude Code **2.1.292**.
 
-Tired of hitting the usage limit of your Pro or Max subscription right in the middle of a task? Or worse: lying awake at night, afraid Claude is quietly burning through all of your extra usage? Relax. Embrace **graceful-stop**.
+A Claude Code mod that stops your agents cleanly before your Pro or Max credit runs out, instead of letting the limit cut them off mid-task. They wrap up, report, and the orchestrator writes a memo you can resume from once your credit is back.
 
-A Claude Code mod that winds your agents down **cleanly** before your subscription credit runs out, instead of letting the limit cut them off in the middle of a task.
+![The graceful-stop card](docs/card.png)
 
-When the session credit gets close to its limit, the mod stops new work. Every running subagent gets a few more tool calls to reach a consistent state, then must hand back a status report. The orchestrator turns these reports into a **resume memo** at the root of your repository. Once your credit is back, one command picks the work up from it.
+## How it works
 
-## The panel
+1. **Armed**: the mod watches your 5-hour and 7-day windows.
+2. **Stopping**: at 90% of the 5-hour window or 95% of the week, no new subagent can start. Running ones get 5 more tool calls to leave things consistent, then hand back a status report.
+3. **Overage**: if a window hits 100%, the stop can finish on extra usage, up to an estimated $2.
+4. **Stopped**: the orchestrator turns the reports into `GRACEFUL-STOP_<date>.md` at the root of your repo, and no more requests go out.
 
-A panel above the prompt keeps the mod in view:
+The weekly threshold is higher because the last 10% of a week is about one whole session.
 
-![The graceful-stop card: a green ARMED badge with the settings, Off and Resume buttons, and a gauge for the 5-hour and the 7-day windows with their reset times](docs/card.png)
-
-- **The state of the mod**, as a colored badge: armed, stopping, overage, stopped (with the time your credit is back), braked, or off.
-- **A gauge per credit window**, 5 hours and 7 days, aligned under the badge and as long as the thresholds beside it, filled to the eighth of a character. Its color fades from green to amber 15 points before the window's threshold, then to red at it; the thin `▏` on the dark track is the threshold. It moves as the agent works, one point at a time, with each answer from the model. The terminal paints it cell by cell in true color; the desktop app draws the same gauge as colored text.
-- **Your settings**, beside the badge while the mod is armed: the two thresholds, the overage budget and the grace tool calls each subagent keeps.
-- **Off / On** turns the mod off for this session, or arms it again.
-- **Resume** relaunches the work from the resume memo. It is dimmed while it would be refused (a window still over its threshold, a clean stop under way, Claude at work); pressed anyway, it says why.
-
-Click a button in the fullscreen terminal or the desktop app. Elsewhere, `ctrl+x tab` moves the focus to the panel, then `o` presses Off / On and `r` Resume (or Tab and Enter); Esc returns to the prompt. `[-]` or `ctrl+x ctrl+a` folds the panel away, and unfolds it again: Claude Code remembers the fold, and a plugin cannot undo it.
-
-## What happens
-
-| Phase | When | What the mod does |
-| --- | --- | --- |
-| **armed** | Normal use | Watches the credit windows Claude Code reports. Nothing else. |
-| **stopping** | 5-hour session window ≥ **90%**, or 7-day window ≥ **95%** (or `/graceful-stop stop`) | Refuses new subagents. Warns every running subagent: finish or revert the current change within **5 tool calls**, then return a status report (done / half done with files / next step / watch-outs). After that, its tools are cut off. Tells the orchestrator to write the resume memo once the last report is in. |
-| **overage** | A window reaches 100% | Lets the clean stop finish on paid extra usage, up to an estimated **$2**, and nothing else. |
-| **stopped** / **braked** | The memo is written, or the overage budget is spent | No request leaves for the model anymore. The panel above the prompt says so, with the time your credit is back: `today 18:40 (in 2 h 13)`. Its **Resume** button, or `/graceful-stop resume`, then picks the work up. |
-
-The weekly threshold is higher than the session one on purpose: the last 10% of a week is about a whole 5-hour session.
-
-Everything the mod says in the conversation is drawn in **yellow** under a `⏹  graceful-stop` label: its notes to the orchestrator and the brake's answers (which look like a reply but come from no model). Its command answers with the card described under The panel, above. You always tell the mod's actions apart from the agent's own work. This changes the drawing only, never what the model reads; press ctrl+o for the raw transcript.
-
-### The resume memo
-
-As soon as the stop starts, the mod writes a provisional `GRACEFUL-STOP_<date>.md` at the root of the git repository the session works in (else in the session's root folder). It copies in each subagent's status report as it arrives, so the file is useful even if the orchestrator never gets to write its own memo. The orchestrator then replaces the file with the full memo: the overall goal, each agent's state, the decisions made, and how to resume. The mod never overwrites a memo the orchestrator wrote.
-
-The session ends once that memo is written, or after two orchestrator turns that did not write it.
-
-The memo and the agents' status reports are written in your language: the language you prompt in, even though the mod's own messages are in English. The provisional memo keeps its few headings in English.
-
-### Resuming
-
-`/graceful-stop resume` does it all in one go: it checks that your credit is back, re-arms the mod and hands the orchestrator a prompt to read the memo and carry on, relaunching the unfinished tasks from their next step.
-
-If a window is still over its threshold (90% of the 5-hour window, 95% of the 7-day one), it refuses and tells you when to come back:
+Once your credit is back, **Resume** (or `/gs resume`) re-arms the mod and has the orchestrator pick up from the memo. Too early, and it tells you when:
 
 ```
 Your credits have not been reset yet. Reset time: today 18:40 (in 2 h 13).
 ```
 
-The time is the reset of the last window holding you back: when the 5-hour window resets but the week is still at 96%, it is the weekly reset.
+It also works from a new session in the same repo: the mod remembers the last memo, or takes the newest one at the root. `claude --resume <session>` brings back the conversation too.
 
-It works in the same session as in a new one. The mod keeps the last credit reading and the memo's path in its own store, under your Claude Code configuration folder, so a fresh `claude` started in the same repository knows both. Without a kept path it takes the newest `GRACEFUL-STOP_*.md` at the root of the repository (or `CLEAN-END-OF-SESSION_*.md`, from before the mod was renamed). A new session has only the memo to go on; `claude --resume <session>` brings back the conversation too.
+The memo and the reports are written in your language. Anything the mod says in the conversation shows up in yellow, so you can tell it apart from the agent's own work.
+
+## Commands
+
+`/gs` is short for `/graceful-stop`.
+
+| Command | |
+| --- | --- |
+| `/gs` | Show the card |
+| `/gs stop` | Start the clean stop now |
+| `/gs resume` | Re-arm and pick up from the memo |
+| `/gs on` / `off` | Arm or disarm for this session |
+
+Commands run immediately, even mid-turn. In the panel, click the buttons (fullscreen terminal or desktop app), or press `ctrl+x tab` then `o` / `r`. `ctrl+x ctrl+a` folds the panel.
 
 ## Settings
 
-In `/config`, the mod's settings are folded under a single **▸ graceful-stop** row, so they don't clutter the menu.
+In `/config`, set the **▸ graceful-stop** row to `true` to show the settings (reopen `/config` if they don't appear).
 
-> **To open it, set that row to `true`.** The `/config` menu has no real collapsible groups, so the chevron is a toggle in disguise: `true` unfolds the settings below it (the row turns into **▾ graceful-stop**), `false` folds them away again. If the settings don't show up right away, close and reopen `/config`.
-
-Once unfolded, every setting starts with `graceful-stop ·`:
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| Arm at session start | true | Every new session starts armed. Set to `false` to decide session by session: each one starts off, and the panel's **On** button arms it |
-| Session trigger threshold (%) | 90 | Use of the 5-hour window that starts the clean stop |
-| Weekly trigger threshold (%) | 95 | Use of the 7-day window that starts the clean stop |
-| Overage budget ($) | 2 | Estimated spend allowed past 100% to finish the stop |
-| Grace tool calls | 5 | Tool calls each subagent keeps after its warning |
+| Setting | Default |
+| --- | --- |
+| Arm at session start | on (off: each session starts disarmed) |
+| Session threshold | 90% |
+| Weekly threshold | 95% |
+| Overage budget | $2 |
+| Grace tool calls | 5 |
 
 ## Install
-
-This repository is its own plugin marketplace:
 
 ```sh
 claude plugin marketplace add Rctt27/graceful-stop
 claude plugin install graceful-stop@graceful-stop
 ```
 
-Then run `/reload-plugins`, or restart Claude Code.
+Then `/reload-plugins`. From a local clone: `claude --plugin-dir /path/to/graceful-stop`.
 
-Or from a local clone, for one session or for every session:
+**Requirements:** Claude Code with mods (function-hook plugins, early access; tested on 2.1.289 – 2.1.292) and a Pro or Max subscription. Credit percentages only exist on a subscription: with an API key, only `/gs stop` works. Extra usage is optional; without it, the stop has to fit before 100%.
 
-```sh
-claude --plugin-dir /path/to/graceful-stop
-```
+## Good to know
 
-```jsonc
-// ~/.claude/settings.json
-{ "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/path/to/graceful-stop" } }
-```
-
-## Requirements
-
-- **Claude Code with function-hook plugins (mods).** This API is in early access and may change between releases. The mod was built and tested on Claude Code **2.1.289 – 2.1.292**; the latest version tested and approved is **2.1.292**.
-- **A Claude Pro or Max subscription.** Claude Code reports credit percentages only on a subscription. With an API key, the thresholds never fire, and only `/graceful-stop stop` works.
-- **Optional: extra usage** turned on in your claude.ai usage settings, with a monthly cap. Without it there is no overage: at 100% Claude Code is cut off as usual, so the clean stop must fit within the margin before 100%.
-
-## Commands
-
-| Command | Effect |
-| --- | --- |
-| `/graceful-stop` or `status` | Shows the phase, the credit windows, the agents warned and the memo path |
-| `/graceful-stop stop` | Starts the clean stop now, whatever the credit |
-| `/graceful-stop resume` | Once your credit is back: re-arms the mod and relaunches the work from the resume memo |
-| `/graceful-stop on` | Re-arms the mod without relaunching anything |
-| `/graceful-stop off` | Ignores the thresholds for this session |
-
-`/gs` is short for `/graceful-stop`: `/gs`, `/gs resume`, `/gs off` and so on.
-
-Each command answers with the same card as the panel, with what it just did on top (`/graceful-stop` alone shows the card). The card's **Resume** and **Off / On** buttons do the same as `resume`, `off` and `on`.
-
-The command runs at once, even while a turn is running.
-
-## Limits worth knowing
-
-- **The overage budget is an estimate.** It is the session's cost at API prices since a window reached 100%, which is how extra usage is billed. It is not your invoice. Your real safety net is the monthly cap you set on claude.ai.
-- **The behaviour past 100% depends on Claude Code.** With extra usage on, Claude Code may continue on its own or ask you first. If it asks, the clean stop waits for your answer.
-- **The reset time comes from Claude Code.** Once the session is stopped, no request leaves, so the credit reading stays where it was; the mod trusts the reset time that came with it and counts a window as reset once that time has passed. Times are shown in your computer's local time.
-- **The gauges show the last reading Claude Code got.** A reading comes with each answer from the model, so usage from another terminal or from claude.ai shows up only at the next answer here. A new session draws the last reading kept by the previous one, and says how old it is, until its first answer.
-- **A tool already running is not interrupted.** The mod refuses the *next* tool call, so a long command runs to its end.
-- **Teammates running in their own terminal pane** are outside the mod's reach. Subagents started by the Agent tool are covered.
-- **Some details are internal to Claude Code.** Status reports are captured from the subagent hand-back tool (`SubagentHandback`). If it changes, the provisional memo loses the reports and the rest still works.
+- The overage budget is an estimate at API prices, not your invoice. The monthly cap you set on claude.ai is the real safety net.
+- Readings come with each model answer, so usage from elsewhere (another terminal, claude.ai) shows up at the next one. Reset times are shown in local time.
+- A tool already running isn't interrupted; the next call is refused.
+- Teammates in their own terminal pane are out of reach; subagents started by the Agent tool are covered.
+- Reports are captured from Claude Code's internal `SubagentHandback` tool. If that changes, the memo loses them but the rest still works.
 
 ## Development
 
 ```sh
-claude plugin validate .   # what the engine would load or refuse
-claude plugin test .       # the tests in tests/
+claude plugin validate .
+claude plugin test .
 ```
 
-While you edit the mod, load it with `--plugin-dir`: each save reloads it in the running session.
+Load with `--plugin-dir` while editing: each save reloads the mod.
 
 ## License
 
